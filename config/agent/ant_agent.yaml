@@ -1,0 +1,18 @@
+# @package agent
+
+name: ant_agent
+enable_lakeview: true
+json_formatter_model: json_formatter_model
+tools:
+  - bash
+  - edit_tool
+  - create_file
+  - sequential_thinking
+  - task_done
+allow_mcp_servers:
+  - playwright
+mcp_servers:
+  playwright:
+    command: npx
+    args:
+      - "@playwright/mcp@0.0.27"

@@ -1,0 +1,5 @@
+# @package model
+
+defaults:
+  - claude
+  - ../provider/anthropic

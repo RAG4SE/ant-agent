@@ -1,0 +1,4 @@
+# @package provider
+
+api_key: ${oc.env:DEEPSEEK_API_KEY}
+base_url: https://api.deepseek.com
