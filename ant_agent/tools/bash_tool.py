@@ -31,11 +31,13 @@ class BashTool(AntTool):
     def _run(self, command: str, working_dir: Optional[str] = None) -> AntToolResult:
         """Execute bash command synchronously."""
         try:
-            # Change to working directory if specified
-            original_cwd = None
-            if working_dir:
+            # Use current directory if working_dir is invalid or not provided
+            if working_dir and os.path.exists(working_dir):
                 original_cwd = os.getcwd()
                 os.chdir(working_dir)
+            else:
+                # Use current working directory
+                original_cwd = None
 
             # Execute command
             result = subprocess.run(

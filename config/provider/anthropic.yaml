@@ -1,4 +1,0 @@
-# @package provider
-
-api_key: ${oc.env:ANTHROPIC_API_KEY}
-base_url: https://api.anthropic.com

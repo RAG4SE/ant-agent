@@ -1,7 +1,0 @@
-# @package trajectory
-
-enabled: true
-output_dir: trajectories
-include_llm_calls: true
-include_tool_calls: true
-include_system_info: true

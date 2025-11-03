@@ -1,0 +1,64 @@
+# Ant Agent Configuration
+# This file contains all configuration options for Ant Agent
+# Based on configuration classes in ant_agent/utils/config.py
+
+# Application-level settings
+app:
+  debug: true
+  working_dir: ""
+  max_steps: 200
+  must_patch: false
+  verbose: true
+  show_config: false
+
+# Agent configuration
+agent:
+  model: "deepseek-chat"
+  max_steps: 200
+  allow_mcp_servers: []
+  mcp_servers: {}
+
+# Model configuration
+model:
+  model: "deepseek-chat"
+  model_provider: "deepseek"
+  api_version: null
+  temperature: 0.5
+  top_p: 1.0
+  top_k: 0
+  parallel_tool_calls: true
+  max_retries: 10
+  max_tokens: 4096
+  max_completion_tokens: null
+  supports_tool_calling: true
+  candidate_count: null
+  stop_sequences: null
+
+# LSP Configuration (new LSPConfig)
+lsp:
+  enabled: true
+  auto_start: true
+  verbose: false
+  use_async: true
+  languages:
+    - "python"
+    - "typescript"
+    - "javascript"
+    - "java"
+    - "rust"
+    - "go"
+    - "csharp"
+    - "kotlin"
+    - "solidity"
+
+# Trajectory configuration
+trajectory:
+  enabled: true
+  output_dir: "trajectories"
+  output_file: "trajectory.json"
+  save_on_completion: true
+  include_messages: true
+  include_tool_results: true
+  include_llm_calls: true
+  include_tool_calls: true
+  include_system_info: true

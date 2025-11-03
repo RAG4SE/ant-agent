@@ -19,7 +19,7 @@ from rich.text import Text
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ant_agent.agent.ant_agent import AntAgent
-from ant_agent.utils.config import AppConfig
+from ant_agent.utils.config import AppConfig, LLMProvider
 from ant_agent.utils.trajectory_recorder import TrajectoryRecorder
 
 
@@ -80,7 +80,10 @@ def run(task: str, config: Optional[str], provider: Optional[str], model: Option
 
     # Override with command line options
     if provider:
-        model_config.model_provider = provider
+        if isinstance(provider, str):
+            model_config.model_provider = LLMProvider(provider.lower())
+        else:
+            model_config.model_provider = provider
     if model:
         model_config.model = model
     if max_steps:
@@ -199,20 +202,19 @@ def show_config(config: Optional[str]):
         app_config = load_app_config(config)
 
         console.print("📋 Configuration:", style="bold")
-        console.print(f"  Agents: {list(app_config.agents.keys())}")
-        console.print(f"  Models: {list(app_config.models.keys())}")
-        console.print(f"  Providers: {list(app_config.model_providers.keys())}")
+        console.print(f"  Agent: {app_config.agent.name if app_config.agent else 'None'}")
+        console.print(f"  Model: {app_config.model.model if app_config.model else 'None'}")
+        console.print(f"  Provider: {app_config.model.model_provider.value if app_config.model else 'None'}")
 
-        if app_config.agents:
-            agent_name = list(app_config.agents.keys())[0]
-            agent_config = app_config.get_agent_config(agent_name)
-            model_config = app_config.get_model_config(agent_config.model)
+        if app_config.agent:
+            agent_config = app_config.get_agent_config()
+            model_config = app_config.get_model_config()
 
-            console.print(f"\n🤖 Default Agent ({agent_name}):")
+            console.print(f"\n🤖 Agent ({agent_config.name}):")
             console.print(f"  Model: {model_config.model}")
             console.print(f"  Provider: {model_config.model_provider}")
             console.print(f"  Max Steps: {agent_config.max_steps}")
-            console.print(f"  Tools: {', '.join(agent_config.tools)}")
+            console.print(f"  Tools: {', '.join(agent_config.tools) if agent_config.tools else 'None'}")
 
     except Exception as e:
         console.print(f"❌ Error loading configuration: {str(e)}", style="red")

@@ -14,21 +14,21 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 from ant_agent.tools.base import AntToolResult
-from omegaconf import DictConfig
+from ant_agent.utils.config import TrajectoryConfig
 
 
 class TrajectoryRecorder:
     """Records agent execution trajectories for debugging and analysis."""
 
-    def __init__(self, config: DictConfig):
+    def __init__(self, config: TrajectoryConfig):
         """Initialize trajectory recorder.
 
         Args:
-            config: Trajectory recording configuration (DictConfig from Hydra)
+            config: Trajectory recording configuration (TrajectoryConfig from config.py)
         """
         self.config = config
-        self.enabled = config.get('enabled', True)
-        self.output_dir = Path(config.get('output_dir', 'trajectories'))
+        self.enabled = config.enabled
+        self.output_dir = Path(config.output_dir)
         self.trajectory_data: Dict[str, Any] = {
             "session_info": {
                 "start_time": datetime.now().isoformat(),
@@ -44,7 +44,7 @@ class TrajectoryRecorder:
 
     def add_message(self, message: BaseMessage) -> None:
         """Add a message to the trajectory."""
-        if not self.enabled or not self.config.get('include_llm_calls', True):
+        if not self.enabled or not self.config.include_llm_calls:
             return
 
         message_data = {
@@ -86,7 +86,7 @@ class TrajectoryRecorder:
 
     def add_tool_result(self, result: AntToolResult) -> None:
         """Add a tool execution result to the trajectory."""
-        if not self.enabled or not self.config.get('include_tool_calls', True):
+        if not self.enabled or not self.config.include_tool_calls:
             return
 
         tool_data = {
@@ -101,7 +101,7 @@ class TrajectoryRecorder:
 
     def add_system_info(self, info: Dict[str, Any]) -> None:
         """Add system information to the trajectory."""
-        if not self.enabled or not self.config.get('include_system_info', True):
+        if not self.enabled or not self.config.include_system_info:
             return
 
         self.trajectory_data["system_info"].update(info)
@@ -110,7 +110,7 @@ class TrajectoryRecorder:
         """Save the trajectory to a file.
 
         Args:
-            filename: Optional filename. If not provided, generates one.
+            filename: Optional filename. If not provided, uses config.output_file.
 
         Returns:
             Path to the saved trajectory file
@@ -118,10 +118,9 @@ class TrajectoryRecorder:
         if not self.enabled:
             return ""
 
-        # Generate filename if not provided
+        # Use config output_file if filename not provided
         if not filename:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"trajectory_{timestamp}.json"
+            filename = self.config.output_file
 
         filepath = self.output_dir / filename
 
@@ -146,6 +145,8 @@ class TrajectoryRecorder:
             "session_duration": self._calculate_duration(),
             "successful_tools": sum(1 for call in self.trajectory_data["tool_calls"] if call.get("success", False)),
             "failed_tools": sum(1 for call in self.trajectory_data["tool_calls"] if not call.get("success", True)),
+            "output_file": self.config.output_file,
+            "output_dir": str(self.output_dir)
         }
 
     def _calculate_duration(self) -> Optional[str]:

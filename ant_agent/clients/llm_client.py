@@ -14,7 +14,6 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.llms import Ollama
 
 from ant_agent.utils.config import LLMProvider, ModelConfig
 
@@ -37,13 +36,7 @@ class LLMClient:
             "max_retries": self.model_config.max_retries,
         }
 
-        if self.model_config.api_key:
-            common_params["api_key"] = self.model_config.api_key
-        elif hasattr(self, '_get_api_key_from_env'):
-            common_params["api_key"] = self._get_api_key_from_env()
-
-        if self.model_config.base_url:
-            common_params["base_url"] = self.model_config.base_url
+        common_params["api_key"] = self._get_api_key_from_env()
 
         match self.provider:
             case LLMProvider.OPENAI:
@@ -57,74 +50,40 @@ class LLMClient:
                     "max_tokens": self.model_config.max_tokens,
                     "max_retries": self.model_config.max_retries,
                 }
-                if self.model_config.api_key:
-                    anthropic_params["api_key"] = self.model_config.api_key
-                if self.model_config.base_url:
-                    anthropic_params["base_url"] = self.model_config.base_url
                 return ChatAnthropic(**anthropic_params)
 
             case LLMProvider.GOOGLE:
                 return ChatGoogleGenerativeAI(**common_params)
-
-            case LLMProvider.OLLAMA:
-                # Ollama uses different parameters
-                ollama_params = {
-                    "model": self.model_config.model,
-                    "temperature": self.model_config.temperature,
-                }
-                if self.model_config.base_url:
-                    ollama_params["base_url"] = self.model_config.base_url
-                return Ollama(**ollama_params)
-
+            
             case LLMProvider.OPENROUTER:
                 # OpenRouter uses OpenAI-compatible API
-                if not self.model_config.base_url:
-                    common_params["base_url"] = "https://openrouter.ai/api/v1"
+                common_params["base_url"] = "https://openrouter.ai/api/v1"
                 return ChatOpenAI(**common_params)
 
             case LLMProvider.DEEPSEEK:
                 # DeepSeek uses OpenAI-compatible API
-                if not self.model_config.base_url:
-                    common_params["base_url"] = "https://api.deepseek.com"
+                common_params["base_url"] = "https://api.deepseek.com"
                 return ChatOpenAI(**common_params)
 
             case LLMProvider.DOUBAO:
                 # Doubao uses OpenAI-compatible API
-                if not self.model_config.base_url:
-                    common_params["base_url"] = "https://ark.cn-beijing.volces.com/api/v3/"
+                common_params["base_url"] = "https://ark.cn-beijing.volces.com/api/v3/"
                 return ChatOpenAI(**common_params)
 
             case LLMProvider.DASHSCOPE:
                 # DashScope uses OpenAI-compatible API
-                if not self.model_config.base_url:
-                    common_params["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                common_params["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
                 return ChatOpenAI(**common_params)
 
             case LLMProvider.LINGXI:
                 # Lingxi uses OpenAI-compatible API
-                if not self.model_config.base_url:
-                    common_params["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                common_params["base_url"] = "https://antchat.alipay.com/v1"
                 return ChatOpenAI(**common_params)
 
             case LLMProvider.KIMI:
                 # Kimi uses OpenAI-compatible API
-                if not self.model_config.base_url:
-                    common_params["base_url"] = "https://api.moonshot.cn/v1"
+                common_params["base_url"] = "https://api.moonshot.cn/v1"
                 return ChatOpenAI(**common_params)
-
-            case LLMProvider.AZURE:
-                # Azure OpenAI
-                azure_params = {
-                    "azure_deployment": self.model_config.model,
-                    "temperature": self.model_config.temperature,
-                    "max_tokens": self.model_config.max_tokens,
-                    "max_retries": self.model_config.max_retries,
-                }
-                if self.model_config.api_key:
-                    azure_params["api_key"] = self.model_config.api_key
-                if self.model_config.base_url:
-                    azure_params["azure_endpoint"] = self.model_config.base_url
-                return ChatOpenAI(**azure_params)
 
             case _:
                 raise ValueError(f"Unsupported provider: {self.provider}")
@@ -141,7 +100,6 @@ class LLMClient:
             LLMProvider.LINGXI: "LINGXI_API_KEY",
             LLMProvider.KIMI: "KIMI_API_KEY",
             LLMProvider.OPENROUTER: "OPENROUTER_API_KEY",
-            LLMProvider.AZURE: "AZURE_OPENAI_API_KEY",
         }
         return os.getenv(env_keys.get(self.provider, ""))
 
