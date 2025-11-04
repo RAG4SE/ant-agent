@@ -7,18 +7,23 @@ from __future__ import annotations
 
 import re
 import ast
+import logging
 from typing import Any, Dict, List, Optional, Type
 from pathlib import Path
 
 from ant_agent.tools.base import AntTool, AntToolResult
 from pydantic import BaseModel, Field
 
+# Set up module-level logger
+logger = logging.getLogger(__name__)
+
 
 class PositionFinderInput(BaseModel):
-    """Simplified input schema for position finder tool."""
+    """Enhanced input schema for position finder tool with validation capabilities."""
     file_path: str = Field(description="Path to the source file")
-    line_number: int = Field(description="0-based line number where to search")
-    line_content: str = Field(description="The content of the line to search in")
+    file_content: str = Field(description="Complete content of the source file")
+    line_number: int = Field(description="0-based line number suggested by LLM")
+    line_content: str = Field(description="The content of the line to search in (as suggested by LLM)")
     target: str = Field(description="The target string to find in the line")
 
 
@@ -52,22 +57,33 @@ class PositionFinderTool(AntTool):
     """
 
     name: str = "position_finder"
-    description: str = """Find the exact position of a target string in a specific line of code for LSP tools.
+    description: str = """Intelligent position finder with LLM suggestion validation for LSP tools.
 
-    This simplified tool takes a specific line of code and finds the position of a target string within it.
-    Use it BEFORE calling multilspy_python_definition to get precise coordinates.
+    This enhanced tool validates LLM-suggested positions and finds accurate coordinates for LSP tools.
+    It performs intelligent validation and progressive search when the suggested position is incorrect.
 
     Key features:
-    - Simple and precise: specify exact line and target
-    - LSP-compatible coordinate format (0-indexed line and character)
-    - Working directory support for relative path resolution
-    - High confidence exact matching
+    - Validates LLM-suggested 0-based line numbers against actual file content
+    - Progressive search: ±3 lines → ±5 lines if initial validation fails
+    - Returns accurate 0-based coordinates for LSP tools
+    - Provides detailed error information for fallback strategies
 
-    Best practices:
-    1. Use this tool when you know the exact line containing the target
-    2. Provide the full line content for accurate matching
-    3. Use 0-based line numbers as per LSP specification
-    4. The tool returns the first occurrence of the target in the line"""
+    Validation process:
+    1. Verifies the suggested line content matches the actual file
+    2. Checks if target exists at the suggested position
+    3. If not found, searches ±3 lines around the suggestion
+    4. If still not found, expands to ±5 lines
+    5. Returns precise coordinates or detailed error for bash fallback
+
+    When to use:
+    - When LLM provides a suggested line number and content
+    - Before calling multilspy tools to validate coordinates
+    - When you need intelligent position validation with fallback options
+
+    On validation failure:
+    - Returns detailed error with search range information
+    - Agent should use bash+grep for manual code exploration
+    - Provides alternative search strategies"""
 
     args_schema: Type[BaseModel] = PositionFinderInput
     working_dir: str
@@ -92,93 +108,205 @@ class PositionFinderTool(AntTool):
         else:
             return str(Path(self.working_dir) / path)
 
-    def _run(self, file_path: str, line_number: int, line_content: str, target: str) -> AntToolResult:
-        """Find the position of a target in the specified line of code.
+    def _run(self, file_path: str, file_content: str, line_number: int, line_content: str, target: str) -> AntToolResult:
+        """Intelligent position finder with LLM suggestion validation and progressive search.
 
         Args:
             file_path: Path to the source file
-            line_number: 0-based line number where to search
-            line_content: The content of the line to search in
+            file_content: Complete content of the source file
+            line_number: 0-based line number suggested by LLM
+            line_content: The content of the line to search in (as suggested by LLM)
             target: The target string to find in the line
 
         Returns:
-            LSP-compatible coordinates with the target position
+            Validated LSP-compatible coordinates or detailed error for bash fallback
         """
+        logger.info(f"PositionFinder: Starting validation for target '{target}' at line {line_number}")
+        logger.debug(f"File: {file_path}, Suggested line content: '{line_content}'")
+
         try:
             # Resolve file path against working directory
             absolute_path = self._get_absolute_path(file_path)
-            path = Path(absolute_path)
+            logger.debug(f"Resolved absolute path: {absolute_path}")
 
-            # 验证文件存在（可选，因为我们要找的是指定行的内容）
-            if not path.exists():
+            # Parse file content into lines
+            lines = file_content.split('\n')
+            logger.debug(f"File has {len(lines)} total lines")
+
+            # Validate line number is within bounds
+            if line_number < 0 or line_number >= len(lines):
+                logger.warning(f"Invalid line number {line_number}. File has {len(lines)} lines (0-based)")
                 return AntToolResult(
                     success=False,
-                    error=f"File not found: {file_path} (resolved to: {absolute_path})",
-                    metadata={"suggestion": "Check if the file path is correct"}
+                    error=f"Invalid line number {line_number}. File has {len(lines)} lines (0-based).",
+                    metadata={
+                        "status": "error",
+                        "suggested_action": "use_bash_search",
+                        "search_performed": "validation_failed",
+                        "line_number_checked": line_number,
+                        "total_lines": len(lines)
+                    }
                 )
 
-            if not path.is_file():
-                return AntToolResult(
-                    success=False,
-                    error=f"Path is not a file: {file_path} (resolved to: {absolute_path})",
-                    metadata={"suggestion": "Use bash to explore directories"}
+            # Step 1: Validate LLM's suggested position
+            logger.info(f"Step 1: Validating LLM suggestion at line {line_number}")
+            actual_line = lines[line_number].rstrip()  # Remove trailing whitespace
+            suggested_line = line_content.rstrip()
+
+            logger.debug(f"Suggested line content: '{suggested_line}'")
+            logger.debug(f"Actual line content: '{actual_line}'")
+
+            # Check if the suggested line content matches actual file content
+            content_matches = self._lines_match(suggested_line, actual_line)
+            target_in_suggested_line = target in suggested_line
+            target_in_actual_line = target in actual_line
+
+            logger.debug(f"Content matches: {content_matches}")
+            logger.debug(f"Target in suggested line: {target_in_suggested_line}")
+            logger.debug(f"Target in actual line: {target_in_actual_line}")
+
+            if content_matches and target_in_actual_line:
+                # Perfect match! LLM's suggestion is correct
+                logger.info(f"✓ Perfect match found! LLM suggestion validated successfully")
+                char_idx = actual_line.find(target)
+                if char_idx != -1:
+                    return self._create_success_result(
+                        absolute_path, line_number, char_idx, actual_line, target,
+                        "exact_match", 1.0, "LLM suggestion validated"
+                    )
+
+            # Step 2: Progressive search if initial validation fails
+            logger.info(f"Step 2: Initial validation failed, starting progressive search")
+            if target_in_actual_line:
+                # Content doesn't match but target is in the actual line
+                logger.info(f"✓ Target found in actual line despite content mismatch")
+                char_idx = actual_line.find(target)
+                return self._create_success_result(
+                    absolute_path, line_number, char_idx, actual_line, target,
+                    "content_mismatch", 0.9, "target_found_in_actual_line"
                 )
 
-            # 在指定的行内容中查找目标
-            char_idx = line_content.find(target)
+            # Step 3: Search ±3 lines around the suggestion
+            logger.info(f"Step 3: Searching ±3 lines around line {line_number}")
+            result = self._search_in_range(lines, line_number, target, 3, absolute_path)
+            if result:
+                logger.info(f"✓ Target found within ±3 lines")
+                return result
 
-            if char_idx == -1:
-                return AntToolResult(
-                    success=False,
-                    error=f"Target '{target}' not found in line {line_number}: {line_content}",
-                    metadata={"suggestion": "Check if the target string is correct or try a different line"}
-                )
+            # Step 4: Expand to ±5 lines if still not found
+            logger.info(f"Step 4: Expanding search to ±5 lines around line {line_number}")
+            result = self._search_in_range(lines, line_number, target, 5, absolute_path)
+            if result:
+                logger.info(f"✓ Target found within ±5 lines")
+                return result
 
-            # 返回LSP兼容的坐标
-            lsp_coordinates = {
-                "file_path": absolute_path,
-                "line": line_number,  # 0-based
-                "character": char_idx  # 0-based
-            }
-
-            result_data = PositionFinderResult(
-                success=True,
-                positions=[{
-                    "line_0_indexed": line_number,
-                    "line_1_indexed": line_number + 1,
-                    "character_0_indexed": char_idx,
-                    "line_content": line_content.strip(),
-                    "match_type": "exact",
-                    "context": line_content.strip()
-                }],
-                best_match={
-                    "line_0_indexed": line_number,
-                    "line_1_indexed": line_number + 1,
-                    "character_0_indexed": char_idx,
-                    "line_content": line_content.strip(),
-                    "match_type": "exact",
-                    "context": line_content.strip()
-                },
-                confidence=1.0,  # 精确匹配，置信度为1.0
-                lsp_coordinates=lsp_coordinates,
-                alternative_suggestions=[]
-            )
-
-            output = f"Found '{target}' at line {line_number} (0-based): {line_content}, character {char_idx} (0-based)"
-            output += f"\nLSP coordinates: {lsp_coordinates}"
-
+            # Step 5: Return detailed error for bash fallback
+            logger.warning(f"✗ Target '{target}' not found within ±5 lines of line {line_number}")
+            logger.info(f"Suggesting bash search as fallback")
             return AntToolResult(
-                success=True,
-                output=output,
-                metadata=result_data.dict()
+                success=False,
+                error=f"Target '{target}' not found within ±5 lines of suggested position (line {line_number}).",
+                metadata={
+                    "status": "error",
+                    "suggested_action": "use_bash_search",
+                    "message": f"Target '{target}' not found within ±5 lines of line {line_number}.",
+                    "line_number_checked": line_number,
+                    "search_performed": "±5 lines",
+                    "suggestion": f"Use 'grep -n \"{target}\" {file_path}' to find all occurrences"
+                }
             )
 
         except Exception as e:
+            logger.error(f"Position finder validation error: {str(e)}", exc_info=True)
             return AntToolResult(
                 success=False,
-                error=f"Position finder error: {str(e)}",
-                metadata={"suggestion": "Check input parameters"}
+                error=f"Position finder validation error: {str(e)}",
+                metadata={
+                    "status": "error",
+                    "suggested_action": "use_bash_search",
+                    "exception": str(e)
+                }
             )
+
+    def _lines_match(self, line1: str, line2: str) -> bool:
+        """Check if two lines match, allowing for some whitespace differences."""
+        # Remove leading/trailing whitespace and compare
+        line1_stripped = line1.strip()
+        line2_stripped = line2.strip()
+        matches = line1_stripped == line2_stripped
+        logger.debug(f"Line comparison: '{line1_stripped}' vs '{line2_stripped}' -> {matches}")
+        return matches
+
+    def _search_in_range(self, lines: List[str], center_line: int, target: str, range_size: int, file_path: str) -> Optional[AntToolResult]:
+        """Search for target in a range around the center line."""
+        start = max(0, center_line - range_size)
+        end = min(len(lines), center_line + range_size + 1)
+
+        logger.debug(f"Searching ±{range_size} lines around line {center_line} (range: {start}-{end-1})")
+
+        for i in range(start, end):
+            line_content = lines[i].rstrip()
+            if target in line_content:
+                char_idx = line_content.find(target)
+                logger.info(f"✓ Target found at line {i} (0-based) within ±{range_size} search")
+                logger.debug(f"Line {i} content: '{line_content}'")
+                return self._create_success_result(
+                    file_path, i, char_idx, line_content, target,
+                    f"range_search_±{range_size}", 0.8, f"found_in_±{range_size}_lines"
+                )
+
+        logger.debug(f"Target not found in ±{range_size} lines search")
+        return None
+
+    def _create_success_result(self, file_path: str, line_number: int, char_idx: int,
+                             line_content: str, target: str, match_type: str, confidence: float,
+                             validation_method: str) -> AntToolResult:
+        """Create a success result with proper formatting."""
+        logger.info(f"Creating success result for target '{target}' at line {line_number}, char {char_idx}")
+        logger.debug(f"Match type: {match_type}, Confidence: {confidence}, Validation: {validation_method}")
+
+        lsp_coordinates = {
+            "file_path": file_path,
+            "line": line_number,  # 0-based
+            "character": char_idx  # 0-based
+        }
+
+        result_data = PositionFinderResult(
+            success=True,
+            positions=[{
+                "line_0_indexed": line_number,
+                "line_1_indexed": line_number + 1,
+                "character_0_indexed": char_idx,
+                "line_content": line_content.strip(),
+                "match_type": match_type,
+                "context": line_content.strip(),
+                "validation_method": validation_method
+            }],
+            best_match={
+                "line_0_indexed": line_number,
+                "line_1_indexed": line_number + 1,
+                "character_0_indexed": char_idx,
+                "line_content": line_content.strip(),
+                "match_type": match_type,
+                "context": line_content.strip(),
+                "validation_method": validation_method
+            },
+            confidence=confidence,
+            lsp_coordinates=lsp_coordinates,
+            alternative_suggestions=[]
+        )
+
+        output = f"Found '{target}' at line {line_number} (0-based): {line_content}, character {char_idx} (0-based)"
+        output += f"\nLSP coordinates: {lsp_coordinates}"
+        output += f"\nValidation: {validation_method} (confidence: {confidence})"
+
+        logger.info(f"✓ Success result created with confidence {confidence}")
+
+        return AntToolResult(
+            success=True,
+            output=output,
+            metadata=result_data.dict()
+        )
 
     def _find_positions(self, content: str, target: str, search_mode: str, target_type: str, context_line: Optional[int]) -> List[Dict[str, Any]]:
         """Find all positions of the target in content."""

@@ -106,6 +106,13 @@ class TrajectoryRecorder:
 
         self.trajectory_data["system_info"].update(info)
 
+    def add_system_prompt(self, system_prompt: str) -> None:
+        """Add the system prompt to the trajectory."""
+        if not self.enabled or not self.config.include_system_info:
+            return
+
+        self.trajectory_data["system_info"]["system_prompt"] = system_prompt
+
     def save(self, filename: Optional[str] = None) -> str:
         """Save the trajectory to a file.
 

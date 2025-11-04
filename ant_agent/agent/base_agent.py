@@ -47,7 +47,12 @@ class BaseAgent(ABC):
         self._tools = self._initialize_tools()
 
         # Set the initial system prompt
-        self._messages = [SystemMessage(content=self._get_system_prompt())]
+        system_prompt = self._get_system_prompt()
+        self._messages = [SystemMessage(content=system_prompt)]
+
+        # Record system prompt in trajectory if enabled
+        if self.trajectory_recorder:
+            self.trajectory_recorder.add_system_prompt(system_prompt)
         
 
 
@@ -76,10 +81,15 @@ class BaseAgent(ABC):
 
     def reset(self) -> None:
         """Reset the agent state."""
-        self._messages = [SystemMessage(content=self._get_system_prompt())]
+        system_prompt = self._get_system_prompt()
+        self._messages = [SystemMessage(content=system_prompt)]
         self._tool_results.clear()
         self._step_count = 0
         self._task_completed = False
+
+        # Record system prompt in trajectory if enabled
+        if self.trajectory_recorder:
+            self.trajectory_recorder.add_system_prompt(system_prompt)
 
     async def arun(self, user_input: str) -> str:
         """Run the agent asynchronously with user input."""
