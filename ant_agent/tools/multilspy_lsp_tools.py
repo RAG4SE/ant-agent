@@ -65,107 +65,21 @@ class LSPFileInput(BaseModel):
     """LSP 文件输入模型"""
     file_path: str = Field(description="文件路径（相对于工作目录）")
 
-# Hover 工具
-class MultilspyHoverTool(AntTool):
-    """Multilspy Hover 工具"""
-    
-    name: str = "multilspy_hover"
-    description: str = "获取代码的悬停信息 (基于 Multilspy)"
-    args_schema: Type[BaseModel] = LSPPositionInput
-    
-    def __init__(self, language: str, workspace_path: str):
-        super().__init__()
-        
-        # 更新工具名称和描述
-        self.name = f"multilspy_{language}_hover"
-        self.description = f"获取 {language.upper()} 代码的悬停信息 (基于 Multilspy)"
-        
-        # 保存状态到全局状态管理器
-        _global_tool_state.set_language(self.name, language)
-        _global_tool_state.set_workspace_path(self.name, workspace_path)
-    
-    def _get_absolute_path(self, file_path: str) -> str:
-        """获取文件的绝对路径"""
-        workspace_path = _global_tool_state.get_workspace_path(self.name)
-        if not workspace_path:
-            raise RuntimeError("工作空间路径未设置")
-            
-        path = Path(file_path)
-        if path.is_absolute():
-            return str(path)
-        else:
-            return str(Path(workspace_path) / path)
-    
-    def start_lsp_server(self) -> None:
-        """启动 LSP 服务器"""
-        if _global_tool_state.get_server(self.name) is not None:
-            return
-            
-        try:
-            language = _global_tool_state.get_language(self.name)
-            workspace_path = _global_tool_state.get_workspace_path(self.name)
-            
-            if not language or not workspace_path:
-                raise RuntimeError("语言或工作空间路径未设置")
-            
-            config = MultilspyConfig.from_dict({
-                "code_language": language,
-                "trace_lsp_communication": False,
-                "start_independent_lsp_process": True
-            })
-            
-            multilspy_logger = MultilspyLogger(False)
-            
-            server = SyncLanguageServer.create(
-                config, 
-                multilspy_logger, 
-                workspace_path
-            )
-            
-            _global_tool_state.set_server(self.name, server)
-            logger.info(f"{language} LSP 服务器已创建")
-            
-        except Exception as e:
-            logger.error(f"创建 LSP 服务器失败: {e}")
-            raise
-    
-    def _run(self, file_path: str, line: int, character: int) -> AntToolResult:
-        """执行 hover 请求"""
-        try:
-            self.start_lsp_server()
-            
-            absolute_path = self._get_absolute_path(file_path)
-            server = _global_tool_state.get_server(self.name)
-            
-            if not server:
-                return AntToolResult(success=False, error="LSP 服务器未启动")
-            
-            with server.start_server():
-                result = server.request_hover(absolute_path, line, character)
-                
-                if result:
-                    return AntToolResult(success=True, output=str(result))
-                else:
-                    return AntToolResult(
-                        success=False, 
-                        error=f"在 {file_path}:{line}:{character} 没有找到悬停信息"
-                    )
-                    
-        except Exception as e:
-            error_msg = f"Hover 请求失败: {e}"
-            logger.error(error_msg)
-            return AntToolResult(success=False, error=f"错误: {error_msg}")
-
 # Definition 工具
 class MultilspyDefinitionTool(AntTool):
     """Multilspy Definition 工具"""
-    
+
     name: str = "multilspy_definition"
     description: str = "跳转到代码的定义 (基于 Multilspy)"
     args_schema: Type[BaseModel] = LSPPositionInput
-    
-    def __init__(self, language: str, workspace_path: str):
-        super().__init__()
+    language: str
+    workspace_path: str
+
+    def __init__(self, language: str, workspace_path: str, **kwargs):
+        # Set language and workspace_path before calling super().__init__ to pass Pydantic validation
+        kwargs['language'] = language
+        kwargs['workspace_path'] = workspace_path
+        super().__init__(**kwargs)
         self.name = f"multilspy_{language}_definition"
         self.description = f"""Find the definition location of {language.upper()} functions, classes, and variables using LSP.
 
@@ -181,21 +95,88 @@ Requirements:
 Returns:
 - File path and position of the definition
 - Multiple results if symbol has multiple definitions"""
-        
+
         _global_tool_state.set_language(self.name, language)
         _global_tool_state.set_workspace_path(self.name, workspace_path)
-    
+
     def _get_absolute_path(self, file_path: str) -> str:
         """获取文件的绝对路径"""
-        workspace_path = _global_tool_state.get_workspace_path(self.name)
-        if not workspace_path:
-            raise RuntimeError("工作空间路径未设置")
-            
         path = Path(file_path)
         if path.is_absolute():
             return str(path)
         else:
-            return str(Path(workspace_path) / path)
+            return str(Path(self.workspace_path) / path)
+
+    def start_lsp_server(self) -> None:
+        """启动 LSP 服务器，添加工作空间验证和状态检查"""
+        existing_server = _global_tool_state.get_server(self.name)
+
+        # 检查现有 server 是否有效且工作空间匹配
+        if existing_server is not None:
+            try:
+                # 验证 server 是否仍然健康
+                stored_workspace = _global_tool_state.get_workspace_path(self.name)
+                if stored_workspace == self.workspace_path:
+                    # 检查 server 是否响应（简单健康检查）
+                    logger.debug(f"{self.language} LSP server already exists and workspace matches, reusing")
+                    return
+                else:
+                    # 工作空间不匹配，需要重新创建
+                    logger.info(f"工作空间变化: {stored_workspace} -> {self.workspace_path}, 重新创建 {self.language} LSP server")
+                    # 尝试停止旧的 server
+                    try:
+                        if hasattr(existing_server, 'stop'):
+                            existing_server.stop()
+                    except Exception as e:
+                        logger.warning(f"停止旧 server 失败: {e}")
+                    # 清除旧的 server
+                    _global_tool_state.set_server(self.name, None)
+            except Exception as e:
+                logger.warning(f"检查现有 server 状态时出错: {e}，将重新创建")
+                _global_tool_state.set_server(self.name, None)
+
+        try:
+            # Use member variables instead of global state
+            if not self.language or not self.workspace_path:
+                raise RuntimeError("语言或工作空间路径未设置")
+
+            # 验证工作空间路径存在
+            workspace_path_obj = Path(self.workspace_path)
+            if not workspace_path_obj.exists():
+                raise RuntimeError(f"工作空间路径不存在: {self.workspace_path}")
+            if not workspace_path_obj.is_dir():
+                raise RuntimeError(f"工作空间路径不是目录: {self.workspace_path}")
+
+            config = MultilspyConfig.from_dict({
+                "code_language": self.language,
+                "trace_lsp_communication": False,
+                "start_independent_lsp_process": True
+            })
+
+            multilspy_logger = MultilspyLogger(False)
+
+            logger.info(f"创建 {self.language} LSP 服务器，工作空间: {self.workspace_path}")
+            server = SyncLanguageServer.create(
+                config,
+                multilspy_logger,
+                str(workspace_path_obj.absolute())
+            )
+
+            _global_tool_state.set_server(self.name, server)
+            _global_tool_state.set_workspace_path(self.name, self.workspace_path)
+            logger.info(f"✅ {self.language} LSP 服务器创建成功")
+
+        except Exception as e:
+            logger.error(f"创建 {self.language} LSP 服务器失败: {e}")
+            raise
+
+    def _get_absolute_path(self, file_path: str) -> str:
+        """获取文件的绝对路径"""
+        path = Path(file_path)
+        if path.is_absolute():
+            return str(path)
+        else:
+            return str(Path(self.workspace_path) / path)
     
     def start_lsp_server(self) -> None:
         """启动 LSP 服务器"""
@@ -232,68 +213,143 @@ Returns:
     
     def _run(self, file_path: str, line: int, character: int) -> AntToolResult:
         """执行 definition 请求"""
-        try:
-            self.start_lsp_server()
-            
-            absolute_path = self._get_absolute_path(file_path)
-            server = _global_tool_state.get_server(self.name)
-            
-            if not server:
-                return AntToolResult(success=False, error="LSP 服务器未启动")
-            
-            with server.start_server():
-                result = server.request_definition(absolute_path, line, character)
-                
-                if result:
-                    # 解析LSP定义结果
-                    parsed_result = parse_lsp_definition_result(str(result))
-                    
-                    if parsed_result['success']:
-                        # 生成格式化的输出
-                        formatted_output = format_lsp_definition_result(parsed_result['definitions'])
-                        
-                        # 构建元数据
-                        metadata = {
-                            'definition_count': parsed_result.get('total_definitions', 0),
-                            'summary': parsed_result.get('summary', ''),
-                            'language': _global_tool_state.get_language(self.name),
-                            'file_path': file_path,
-                            'position': {'line': line, 'character': character}
-                        }
-                        
-                        return AntToolResult(
-                            success=True, 
-                            output=formatted_output,
-                            metadata=metadata
-                        )
-                    else:
-                        # 解析失败，返回原始结果和错误信息
-                        return AntToolResult(
-                            success=True, 
-                            output=str(result),
-                            metadata={'parse_error': parsed_result.get('error')}
-                        )
-                else:
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                self.start_lsp_server()
+
+                # 处理路径：将绝对路径转换为相对于workspace的相对路径
+                try:
+                    # 如果传入的是相对路径，先转换为绝对路径
+                    absolute_path = self._get_absolute_path(file_path)
+                    # 然后转换为相对于workspace的相对路径，供multilspy使用
+                    relative_path = str(Path(absolute_path).relative_to(self.workspace_path))
+                except ValueError as e:
                     return AntToolResult(
-                        success=False, 
-                        error=f"在 {file_path}:{line}:{character} 没有找到定义"
+                        success=False,
+                        error=f"文件路径 {file_path} 不在工作空间 {self.workspace_path} 内: {str(e)}"
                     )
-                    
-        except Exception as e:
-            error_msg = f"Definition 请求失败: {e}"
-            logger.error(error_msg)
-            return AntToolResult(success=False, error=f"错误: {error_msg}")
+
+                server = _global_tool_state.get_server(self.name)
+
+                if not server:
+                    return AntToolResult(success=False, error="LSP 服务器未启动")
+
+                with server.start_server():
+                    # 使用相对路径调用multilspy
+                    result = server.request_definition(relative_path, line, character)
+
+                    if result:
+                        # 解析LSP定义结果
+                        parsed_result = parse_lsp_definition_result(str(result))
+
+                        if parsed_result['success']:
+                            # 生成格式化的输出
+                            formatted_output = format_lsp_definition_result(parsed_result['definitions'])
+
+                            # 构建元数据
+                            metadata = {
+                                'definition_count': parsed_result.get('total_definitions', 0),
+                                'summary': parsed_result.get('summary', ''),
+                                'language': _global_tool_state.get_language(self.name),
+                                'file_path': file_path,
+                                'position': {'line': line, 'character': character},
+                                'retry_count': retry_count
+                            }
+
+                            return AntToolResult(
+                                success=True,
+                                output=formatted_output,
+                                metadata=metadata
+                            )
+                        else:
+                            # 解析失败，返回原始结果和错误信息
+                            return AntToolResult(
+                                success=True,
+                                output=str(result),
+                                metadata={'parse_error': parsed_result.get('error'), 'retry_count': retry_count}
+                            )
+                    else:
+                        # 没有返回结果，可能是文件读取问题
+                        error_detail = f"在 {file_path}:{line}:{character} 没有找到定义"
+                        if retry_count < max_retries - 1:
+                            logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                            retry_count += 1
+                            continue
+                        else:
+                            return AntToolResult(
+                                success=False,
+                                error=error_detail,
+                                metadata={'retry_count': retry_count, 'max_retries': max_retries}
+                            )
+
+            except FileNotFoundError as e:
+                error_detail = f"文件读取失败: 文件 {file_path} 不存在或无法访问"
+                if retry_count < max_retries - 1:
+                    logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    # 短暂等待后重试
+                    import time
+                    time.sleep(0.5 * (retry_count + 1))  # 递增等待时间
+                    continue
+                else:
+                    logger.error(f"{error_detail}，已达到最大重试次数")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': 'file_not_found', 'file_path': file_path, 'retry_count': retry_count}
+                    )
+
+            except PermissionError as e:
+                error_detail = f"文件权限错误: 无法读取文件 {file_path}"
+                if retry_count < max_retries - 1:
+                    logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    continue
+                else:
+                    logger.error(f"{error_detail}，已达到最大重试次数")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': 'permission_error', 'file_path': file_path, 'retry_count': retry_count}
+                    )
+
+            except Exception as e:
+                error_detail = f"Definition 请求失败: {type(e).__name__}: {str(e)}"
+                logger.error(error_detail)
+
+                if retry_count < max_retries - 1:
+                    logger.warning(f"尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    # 短暂等待后重试
+                    import time
+                    time.sleep(0.5 * (retry_count + 1))
+                    continue
+                else:
+                    logger.error(f"已达到最大重试次数，错误: {error_detail}")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': type(e).__name__, 'error_message': str(e), 'retry_count': retry_count}
+                    )
 
 # References 工具
 class MultilspyReferencesTool(AntTool):
     """Multilspy References 工具"""
-    
+
     name: str = "multilspy_references"
     description: str = "查找代码的引用 (基于 Multilspy)"
     args_schema: Type[BaseModel] = LSPPositionInput
-    
-    def __init__(self, language: str, workspace_path: str):
-        super().__init__()
+    language: str
+    workspace_path: str
+
+    def __init__(self, language: str, workspace_path: str, **kwargs):
+        # Set language and workspace_path before calling super().__init__ to pass Pydantic validation
+        kwargs['language'] = language
+        kwargs['workspace_path'] = workspace_path
+        super().__init__(**kwargs)
         self.name = f"multilspy_{language}_references"
         self.description = f"""Find all references to {language.upper()} functions, classes, and variables using LSP.
 
@@ -310,81 +366,158 @@ Requirements:
 Returns:
 - List of all files and positions where the symbol is referenced
 - Context around each reference for easy understanding"""
-        
+
         _global_tool_state.set_language(self.name, language)
         _global_tool_state.set_workspace_path(self.name, workspace_path)
     
     def _get_absolute_path(self, file_path: str) -> str:
         """获取文件的绝对路径"""
-        workspace_path = _global_tool_state.get_workspace_path(self.name)
-        if not workspace_path:
-            raise RuntimeError("工作空间路径未设置")
-            
         path = Path(file_path)
         if path.is_absolute():
             return str(path)
         else:
-            return str(Path(workspace_path) / path)
-    
+            return str(Path(self.workspace_path) / path)
+
     def start_lsp_server(self) -> None:
         """启动 LSP 服务器"""
         if _global_tool_state.get_server(self.name) is not None:
             return
-            
+
         try:
-            language = _global_tool_state.get_language(self.name)
-            workspace_path = _global_tool_state.get_workspace_path(self.name)
-            
-            if not language or not workspace_path:
+            # Use member variables instead of global state
+            if not self.language or not self.workspace_path:
                 raise RuntimeError("语言或工作空间路径未设置")
-            
+
+            # 验证工作空间路径存在
+            workspace_path_obj = Path(self.workspace_path)
+            if not workspace_path_obj.exists():
+                raise RuntimeError(f"工作空间路径不存在: {self.workspace_path}")
+            if not workspace_path_obj.is_dir():
+                raise RuntimeError(f"工作空间路径不是目录: {self.workspace_path}")
+                raise RuntimeError("语言或工作空间路径未设置")
+
             config = MultilspyConfig.from_dict({
-                "code_language": language,
+                "code_language": self.language,
                 "trace_lsp_communication": False,
                 "start_independent_lsp_process": True
             })
-            
+
             multilspy_logger = MultilspyLogger(False)
-            
+
+            logger.info(f"创建 {self.language} LSP 服务器，工作空间: {self.workspace_path}")
             server = SyncLanguageServer.create(
-                config, 
-                multilspy_logger, 
-                workspace_path
+                config,
+                multilspy_logger,
+                str(workspace_path_obj.absolute())
             )
-            
+
             _global_tool_state.set_server(self.name, server)
-            logger.info(f"{language} LSP 服务器已创建")
-            
+            _global_tool_state.set_workspace_path(self.name, self.workspace_path)
+            logger.info(f"✅ {self.language} LSP 服务器创建成功")
+
         except Exception as e:
             logger.error(f"创建 LSP 服务器失败: {e}")
             raise
-    
+
     def _run(self, file_path: str, line: int, character: int) -> AntToolResult:
         """执行 references 请求"""
-        try:
-            self.start_lsp_server()
-            
-            absolute_path = self._get_absolute_path(file_path)
-            server = _global_tool_state.get_server(self.name)
-            
-            if not server:
-                return AntToolResult(success=False, error="LSP 服务器未启动")
-            
-            with server.start_server():
-                result = server.request_references(absolute_path, line, character)
-                
-                if result:
-                    return AntToolResult(success=True, output=str(result))
-                else:
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                self.start_lsp_server()
+
+                # 处理路径：将绝对路径转换为相对于workspace的相对路径
+                try:
+                    # 如果传入的是相对路径，先转换为绝对路径
+                    absolute_path = self._get_absolute_path(file_path)
+                    # 然后转换为相对于workspace的相对路径，供multilspy使用
+                    relative_path = str(Path(absolute_path).relative_to(self.workspace_path))
+                except ValueError as e:
                     return AntToolResult(
-                        success=False, 
-                        error=f"在 {file_path}:{line}:{character} 没有找到引用"
+                        success=False,
+                        error=f"文件路径 {file_path} 不在工作空间 {self.workspace_path} 内: {str(e)}"
                     )
-                    
-        except Exception as e:
-            error_msg = f"References 请求失败: {e}"
-            logger.error(error_msg)
-            return AntToolResult(success=False, error=f"错误: {error_msg}")
+
+                server = _global_tool_state.get_server(self.name)
+
+                if not server:
+                    return AntToolResult(success=False, error="LSP 服务器未启动")
+
+                with server.start_server():
+                    # 使用相对路径调用multilspy
+                    result = server.request_references(relative_path, line, character)
+
+                    if result:
+                        return AntToolResult(
+                            success=True,
+                            output=str(result),
+                            metadata={'retry_count': retry_count}
+                        )
+                    else:
+                        # 没有返回结果，可能是文件读取问题
+                        error_detail = f"在 {file_path}:{line}:{character} 没有找到引用"
+                        if retry_count < max_retries - 1:
+                            logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                            retry_count += 1
+                            continue
+                        else:
+                            return AntToolResult(
+                                success=False,
+                                error=error_detail,
+                                metadata={'retry_count': retry_count, 'max_retries': max_retries}
+                            )
+
+            except FileNotFoundError as e:
+                error_detail = f"文件读取失败: 文件 {file_path} 不存在或无法访问"
+                if retry_count < max_retries - 1:
+                    logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    # 短暂等待后重试
+                    import time
+                    time.sleep(0.5 * (retry_count + 1))  # 递增等待时间
+                    continue
+                else:
+                    logger.error(f"{error_detail}，已达到最大重试次数")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': 'file_not_found', 'file_path': file_path, 'retry_count': retry_count}
+                    )
+
+            except PermissionError as e:
+                error_detail = f"文件权限错误: 无法读取文件 {file_path}"
+                if retry_count < max_retries - 1:
+                    logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    continue
+                else:
+                    logger.error(f"{error_detail}，已达到最大重试次数")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': 'permission_error', 'file_path': file_path, 'retry_count': retry_count}
+                    )
+
+            except Exception as e:
+                error_detail = f"References 请求失败: {type(e).__name__}: {str(e)}"
+                logger.error(error_detail)
+
+                if retry_count < max_retries - 1:
+                    logger.warning(f"尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    # 短暂等待后重试
+                    import time
+                    time.sleep(0.5 * (retry_count + 1))
+                    continue
+                else:
+                    logger.error(f"已达到最大重试次数，错误: {error_detail}")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': type(e).__name__, 'error_message': str(e), 'retry_count': retry_count}
+                    )
 
 
 # Declaration 工具
@@ -394,9 +527,14 @@ class MultilspyDeclarationTool(AntTool):
     name: str = "multilspy_declaration"
     description: str = "跳转到代码的声明 (基于 Multilspy)"
     args_schema: Type[BaseModel] = LSPPositionInput
+    language: str
+    workspace_path: str
 
-    def __init__(self, language: str, workspace_path: str):
-        super().__init__()
+    def __init__(self, language: str, workspace_path: str, **kwargs):
+        # Set language and workspace_path before calling super().__init__ to pass Pydantic validation
+        kwargs['language'] = language
+        kwargs['workspace_path'] = workspace_path
+        super().__init__(**kwargs)
         self.name = f"multilspy_{language}_declaration"
         self.description = f"""Find the declaration of {language.upper()} functions, classes, and variables using LSP.
 
@@ -419,15 +557,11 @@ Returns:
 
     def _get_absolute_path(self, file_path: str) -> str:
         """获取文件的绝对路径"""
-        workspace_path = _global_tool_state.get_workspace_path(self.name)
-        if not workspace_path:
-            raise RuntimeError("工作空间路径未设置")
-
         path = Path(file_path)
         if path.is_absolute():
             return str(path)
         else:
-            return str(Path(workspace_path) / path)
+            return str(Path(self.workspace_path) / path)
 
     def start_lsp_server(self) -> None:
         """启动 LSP 服务器"""
@@ -435,14 +569,20 @@ Returns:
             return
 
         try:
-            language = _global_tool_state.get_language(self.name)
-            workspace_path = _global_tool_state.get_workspace_path(self.name)
+            # Use member variables instead of global state
+            if not self.language or not self.workspace_path:
+                raise RuntimeError("语言或工作空间路径未设置")
 
-            if not language or not workspace_path:
+            # 验证工作空间路径存在
+            workspace_path_obj = Path(self.workspace_path)
+            if not workspace_path_obj.exists():
+                raise RuntimeError(f"工作空间路径不存在: {self.workspace_path}")
+            if not workspace_path_obj.is_dir():
+                raise RuntimeError(f"工作空间路径不是目录: {self.workspace_path}")
                 raise RuntimeError("语言或工作空间路径未设置")
 
             config = MultilspyConfig.from_dict({
-                "code_language": language,
+                "code_language": self.language,
                 "trace_lsp_communication": False,
                 "start_independent_lsp_process": True
             })
@@ -452,258 +592,187 @@ Returns:
             server = SyncLanguageServer.create(
                 config,
                 multilspy_logger,
-                workspace_path
+                self.workspace_path
             )
 
             _global_tool_state.set_server(self.name, server)
-            logger.info(f"✅ 成功启动 {language} LSP 服务器")
+            logger.info(f"✅ 成功启动 {self.language} LSP 服务器")
 
         except Exception as e:
-            logger.error(f"启动 {language} LSP 服务器失败: {e}")
-            raise RuntimeError(f"无法启动 {language} LSP 服务器: {e}")
+            logger.error(f"启动 {self.language} LSP 服务器失败: {e}")
+            raise RuntimeError(f"无法启动 {self.language} LSP 服务器: {e}")
 
     def _run(self, file_path: str, line: int, character: int) -> AntToolResult:
         """查找声明"""
-        try:
-            self.start_lsp_server()
-            server = _global_tool_state.get_server(self.name)
+        max_retries = 3
+        retry_count = 0
 
-            if not server:
-                return AntToolResult(
-                    success=False,
-                    error="LSP 服务器未启动"
-                )
+        while retry_count < max_retries:
+            try:
+                self.start_lsp_server()
+                server = _global_tool_state.get_server(self.name)
 
-            absolute_path = self._get_absolute_path(file_path)
-
-            # 使用 LSP 查找声明
-            with server.start_server():
-                try:
-                    # 注意：multilspy 的 request_definition 实际上可以处理声明和定义
-                    # 这里我们使用相同的方法，但在描述上区分概念
-                    locations = server.request_definition(absolute_path, line, character)
-
-                    if not locations:
-                        return AntToolResult(
-                            success=False,
-                            error="未找到声明",
-                            metadata={"suggestion": "尝试使用 go_to_definition 工具，或检查位置是否正确"}
-                        )
-
-                    # 格式化结果
-                    formatted_locations = []
-                    for loc in locations:
-                        formatted_locations.append({
-                            "file_path": loc["uri"].replace("file://", ""),
-                            "line": loc["range"]["start"]["line"],
-                            "character": loc["range"]["start"]["character"],
-                            "range": loc["range"]
-                        })
-
-                    result = {
-                        "declarations_found": len(formatted_locations),
-                        "declarations": formatted_locations,
-                        "language": _global_tool_state.get_language(self.name)
-                    }
-
-                    return AntToolResult(
-                        success=True,
-                        output=f"Found {len(formatted_locations)} declaration(s)",
-                        metadata=result
-                    )
-
-                except Exception as e:
-                    logger.error(f"查找声明失败: {e}")
+                if not server:
                     return AntToolResult(
                         success=False,
-                        error=f"查找声明失败: {str(e)}",
-                        metadata={"suggestion": "检查文件路径和位置是否正确"}
+                        error="LSP 服务器未启动"
                     )
 
-        except Exception as e:
-            logger.error(f"声明工具执行失败: {e}")
-            return AntToolResult(
-                success=False,
-                error=f"声明工具执行失败: {str(e)}",
-                metadata={"suggestion": "尝试使用 position_finder 获取准确坐标"}
-            )
-
-
-# Document Symbol 工具
-class MultilspyDocumentSymbolTool(AntTool):
-    """Multilspy Document Symbols 工具"""
-    
-    name: str = "multilspy_document_symbol"
-    description: str = "获取文档的符号信息 (基于 Multilspy)"
-    args_schema: Type[BaseModel] = LSPFileInput
-    
-    def __init__(self, language: str, workspace_path: str):
-        super().__init__()
-        self.name = f"multilspy_{language}_document_symbol"
-        self.description = f"获取 {language.upper()} 文档的符号信息 (基于 Multilspy)"
-        
-        _global_tool_state.set_language(self.name, language)
-        _global_tool_state.set_workspace_path(self.name, workspace_path)
-    
-    def _get_absolute_path(self, file_path: str) -> str:
-        """获取文件的绝对路径"""
-        workspace_path = _global_tool_state.get_workspace_path(self.name)
-        if not workspace_path:
-            raise RuntimeError("工作空间路径未设置")
-            
-        path = Path(file_path)
-        if path.is_absolute():
-            return str(path)
-        else:
-            return str(Path(workspace_path) / path)
-    
-    def start_lsp_server(self) -> None:
-        """启动 LSP 服务器"""
-        if _global_tool_state.get_server(self.name) is not None:
-            return
-            
-        try:
-            language = _global_tool_state.get_language(self.name)
-            workspace_path = _global_tool_state.get_workspace_path(self.name)
-            
-            if not language or not workspace_path:
-                raise RuntimeError("语言或工作空间路径未设置")
-            
-            config = MultilspyConfig.from_dict({
-                "code_language": language,
-                "trace_lsp_communication": False,
-                "start_independent_lsp_process": True
-            })
-            
-            multilspy_logger = MultilspyLogger(False)
-            
-            server = SyncLanguageServer.create(
-                config, 
-                multilspy_logger, 
-                workspace_path
-            )
-            
-            _global_tool_state.set_server(self.name, server)
-            logger.info(f"{language} LSP 服务器已创建")
-            
-        except Exception as e:
-            logger.error(f"创建 LSP 服务器失败: {e}")
-            raise
-    
-    def _run(self, file_path: str) -> AntToolResult:
-        """执行 document symbols 请求"""
-        try:
-            self.start_lsp_server()
-            
-            absolute_path = self._get_absolute_path(file_path)
-            server = _global_tool_state.get_server(self.name)
-            
-            if not server:
-                return AntToolResult(success=False, error="LSP 服务器未启动")
-            
-            with server.start_server():
-                result = server.request_document_symbols(absolute_path)
-                
-                if result:
-                    return AntToolResult(success=True, output=str(result))
-                else:
+                # 处理路径：将绝对路径转换为相对于workspace的相对路径
+                try:
+                    # 如果传入的是相对路径，先转换为绝对路径
+                    absolute_path = self._get_absolute_path(file_path)
+                    # 然后转换为相对于workspace的相对路径，供multilspy使用
+                    relative_path = str(Path(absolute_path).relative_to(self.workspace_path))
+                except ValueError as e:
                     return AntToolResult(
-                        success=False, 
-                        error=f"在 {file_path} 中没有找到符号信息"
+                        success=False,
+                        error=f"文件路径 {file_path} 不在工作空间 {self.workspace_path} 内: {str(e)}"
                     )
-                    
-        except Exception as e:
-            error_msg = f"Document symbols 请求失败: {e}"
-            logger.error(error_msg)
-            return AntToolResult(success=False, error=f"错误: {error_msg}")
 
-# Completion 工具
-class MultilspyCompletionTool(AntTool):
-    """Multilspy Completion 工具"""
-    
-    name: str = "multilspy_completion"
-    description: str = "获取代码的补全建议 (基于 Multilspy)"
-    args_schema: Type[BaseModel] = LSPPositionInput
-    
-    def __init__(self, language: str, workspace_path: str):
-        super().__init__()
-        self.name = f"multilspy_{language}_completion"
-        self.description = f"获取 {language.upper()} 代码的补全建议 (基于 Multilspy)"
-        
-        _global_tool_state.set_language(self.name, language)
-        _global_tool_state.set_workspace_path(self.name, workspace_path)
-    
-    def _get_absolute_path(self, file_path: str) -> str:
-        """获取文件的绝对路径"""
-        workspace_path = _global_tool_state.get_workspace_path(self.name)
-        if not workspace_path:
-            raise RuntimeError("工作空间路径未设置")
-            
-        path = Path(file_path)
-        if path.is_absolute():
-            return str(path)
-        else:
-            return str(Path(workspace_path) / path)
-    
-    def start_lsp_server(self) -> None:
-        """启动 LSP 服务器"""
-        if _global_tool_state.get_server(self.name) is not None:
-            return
-            
-        try:
-            language = _global_tool_state.get_language(self.name)
-            workspace_path = _global_tool_state.get_workspace_path(self.name)
-            
-            if not language or not workspace_path:
-                raise RuntimeError("语言或工作空间路径未设置")
-            
-            config = MultilspyConfig.from_dict({
-                "code_language": language,
-                "trace_lsp_communication": False,
-                "start_independent_lsp_process": True
-            })
-            
-            multilspy_logger = MultilspyLogger(False)
-            
-            server = SyncLanguageServer.create(
-                config, 
-                multilspy_logger, 
-                workspace_path
-            )
-            
-            _global_tool_state.set_server(self.name, server)
-            logger.info(f"{language} LSP 服务器已创建")
-            
-        except Exception as e:
-            logger.error(f"创建 LSP 服务器失败: {e}")
-            raise
-    
-    def _run(self, file_path: str, line: int, character: int) -> AntToolResult:
-        """执行 completion 请求"""
-        try:
-            self.start_lsp_server()
-            
-            absolute_path = self._get_absolute_path(file_path)
-            server = _global_tool_state.get_server(self.name)
-            
-            if not server:
-                return AntToolResult(success=False, error="LSP 服务器未启动")
-            
-            with server.start_server():
-                result = server.request_completions(absolute_path, line, character)
-                
-                if result:
-                    return AntToolResult(success=True, output=str(result))
+                # 使用 LSP 查找声明
+                with server.start_server():
+                    try:
+                        # 注意：multilspy 的 request_definition 实际上可以处理声明和定义
+                        # 这里我们使用相同的方法，但在描述上区分概念
+                        locations = server.request_definition(relative_path, line, character)
+
+                        if not locations:
+                            error_detail = f"在 {file_path}:{line}:{character} 没有找到声明"
+                            if retry_count < max_retries - 1:
+                                logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                                retry_count += 1
+                                continue
+                            else:
+                                return AntToolResult(
+                                    success=False,
+                                    error=error_detail,
+                                    metadata={'retry_count': retry_count, 'max_retries': max_retries, 'suggestion': '尝试使用 go_to_definition 工具，或检查位置是否正确'}
+                                )
+
+                        # 格式化结果
+                        formatted_locations = []
+                        for loc in locations:
+                            formatted_locations.append({
+                                "file_path": loc["uri"].replace("file://", ""),
+                                "line": loc["range"]["start"]["line"],
+                                "character": loc["range"]["start"]["character"],
+                                "range": loc["range"]
+                            })
+
+                        result = {
+                            "declarations_found": len(formatted_locations),
+                            "declarations": formatted_locations,
+                            "language": _global_tool_state.get_language(self.name),
+                            'retry_count': retry_count
+                        }
+
+                        return AntToolResult(
+                            success=True,
+                            output=f"Found {len(formatted_locations)} declaration(s)",
+                            metadata=result
+                        )
+
+                    except FileNotFoundError as e:
+                        error_detail = f"文件读取失败: 文件 {file_path} 不存在或无法访问"
+                        if retry_count < max_retries - 1:
+                            logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                            retry_count += 1
+                            # 短暂等待后重试
+                            import time
+                            time.sleep(0.5 * (retry_count + 1))  # 递增等待时间
+                            continue
+                        else:
+                            logger.error(f"{error_detail}，已达到最大重试次数")
+                            return AntToolResult(
+                                success=False,
+                                error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                                metadata={'error_type': 'file_not_found', 'file_path': file_path, 'retry_count': retry_count}
+                            )
+
+                    except PermissionError as e:
+                        error_detail = f"文件权限错误: 无法读取文件 {file_path}"
+                        if retry_count < max_retries - 1:
+                            logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                            retry_count += 1
+                            continue
+                        else:
+                            logger.error(f"{error_detail}，已达到最大重试次数")
+                            return AntToolResult(
+                                success=False,
+                                error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                                metadata={'error_type': 'permission_error', 'file_path': file_path, 'retry_count': retry_count}
+                            )
+
+                    except Exception as e:
+                        error_detail = f"Declaration 请求失败: {type(e).__name__}: {str(e)}"
+                        logger.error(error_detail)
+
+                        if retry_count < max_retries - 1:
+                            logger.warning(f"尝试重试 #{retry_count + 1}")
+                            retry_count += 1
+                            # 短暂等待后重试
+                            import time
+                            time.sleep(0.5 * (retry_count + 1))
+                            continue
+                        else:
+                            logger.error(f"已达到最大重试次数，错误: {error_detail}")
+                            return AntToolResult(
+                                success=False,
+                                error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                                metadata={'error_type': type(e).__name__, 'error_message': str(e), 'retry_count': retry_count, 'suggestion': '检查文件路径和位置是否正确'}
+                            )
+
+            except FileNotFoundError as e:
+                error_detail = f"文件读取失败: 文件 {file_path} 不存在或无法访问"
+                if retry_count < max_retries - 1:
+                    logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    # 短暂等待后重试
+                    import time
+                    time.sleep(0.5 * (retry_count + 1))  # 递增等待时间
+                    continue
                 else:
+                    logger.error(f"{error_detail}，已达到最大重试次数")
                     return AntToolResult(
-                        success=False, 
-                        error=f"在 {file_path}:{line}:{character} 没有找到补全建议"
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': 'file_not_found', 'file_path': file_path, 'retry_count': retry_count}
                     )
-                    
-        except Exception as e:
-            error_msg = f"Completion 请求失败: {e}"
-            logger.error(error_msg)
-            return AntToolResult(success=False, error=f"错误: {error_msg}")
+
+            except PermissionError as e:
+                error_detail = f"文件权限错误: 无法读取文件 {file_path}"
+                if retry_count < max_retries - 1:
+                    logger.warning(f"{error_detail}，尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    continue
+                else:
+                    logger.error(f"{error_detail}，已达到最大重试次数")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': 'permission_error', 'file_path': file_path, 'retry_count': retry_count}
+                    )
+
+            except Exception as e:
+                error_detail = f"Declaration 工具执行失败: {type(e).__name__}: {str(e)}"
+                logger.error(error_detail)
+
+                if retry_count < max_retries - 1:
+                    logger.warning(f"尝试重试 #{retry_count + 1}")
+                    retry_count += 1
+                    # 短暂等待后重试
+                    import time
+                    time.sleep(0.5 * (retry_count + 1))
+                    continue
+                else:
+                    logger.error(f"已达到最大重试次数，错误: {error_detail}")
+                    return AntToolResult(
+                        success=False,
+                        error=f"{error_detail} (重试 {retry_count + 1} 次后仍然失败)",
+                        metadata={'error_type': type(e).__name__, 'error_message': str(e), 'retry_count': retry_count, 'suggestion': '尝试使用 position_finder 获取准确坐标'}
+                    )
+
 
 # 工具工厂
 class MultilspyToolFactory:

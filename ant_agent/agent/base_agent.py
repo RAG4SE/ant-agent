@@ -196,7 +196,11 @@ class BaseAgent(ABC):
                 error_content = f"Tool '{tool_name}' not found"
                 final_output.append(f"✗ {tool_name}: {error_content}")
                 tool_response_messages.append(
-                    ToolMessage(content=error_content, tool_call_id=tool_call_id)
+                    ToolMessage(
+                        content=f"[{tool_name}] {error_content}",
+                        tool_call_id=tool_call_id,
+                        additional_kwargs={"tool_name": tool_name}
+                    )
                 )
                 continue
 
@@ -221,14 +225,22 @@ class BaseAgent(ABC):
 
                 # Create tool response message
                 tool_response_messages.append(
-                    ToolMessage(content=tool_output, tool_call_id=tool_call_id)
+                    ToolMessage(
+                        content=f"[{tool_name}] {tool_output}",
+                        tool_call_id=tool_call_id,
+                        additional_kwargs={"tool_name": tool_name}
+                    )
                 )
 
             except Exception as e:
                 error_content = f"Error executing {tool_name}: {str(e)}"
                 final_output.append(f"✗ {tool_name}: {error_content}")
                 tool_response_messages.append(
-                    ToolMessage(content=error_content, tool_call_id=tool_call_id)
+                    ToolMessage(
+                        content=f"[{tool_name}] {error_content}",
+                        tool_call_id=tool_call_id,
+                        additional_kwargs={"tool_name": tool_name}
+                    )
                 )
 
         # Add all tool response messages to conversation
@@ -262,8 +274,11 @@ class BaseAgent(ABC):
         from ant_agent.tools.thinking_tool import SequentialThinkingTool
         from ant_agent.tools.task_done_tool import TaskDoneTool
         
+        # Get working directory from app_config if available
+        working_dir = getattr(self, 'app_config', None) and self.app_config.working_dir or None
+
         return [
-            BashTool(),
+            BashTool(working_dir=working_dir),
             EditTool(),
             CreateFileTool(),
             SequentialThinkingTool(),

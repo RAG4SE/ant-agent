@@ -81,6 +81,7 @@ class AgentConfig:
     max_steps: int
     allow_mcp_servers: List[str]
     mcp_servers: Dict[str, Any]
+    skill: str  # Selected skill for the agent
 
 
 @dataclass
@@ -123,9 +124,26 @@ class AppConfig:
     agent: AgentConfig
     model: ModelConfig
     trajectory: TrajectoryConfig
-    lsp: LSPConfig  
-    
-    
+    lsp: LSPConfig
+
+    def __post_init__(self):
+        """Post-initialization to set up cross-references."""
+        # Ensure working_dir and lsp.workspace are synchronized
+        if hasattr(self, 'working_dir') and hasattr(self, 'lsp'):
+            # Convert to absolute path for consistency
+            abs_working_dir = str(Path(self.working_dir).absolute())
+            object.__setattr__(self, 'working_dir', abs_working_dir)
+            object.__setattr__(self.lsp, 'workspace', abs_working_dir)
+
+    def __setattr__(self, name, value):
+        """Override to sync working_dir changes to lsp.workspace."""
+        super().__setattr__(name, value)
+        if name == 'working_dir' and hasattr(self, 'lsp'):
+            # Sync working_dir changes to lsp.workspace
+            abs_path = str(Path(value).absolute())
+            super().__setattr__('working_dir', abs_path)
+            object.__setattr__(self.lsp, 'workspace', abs_path)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AppConfig':
         """
@@ -146,7 +164,8 @@ class AppConfig:
             model=agent_data['model'],
             max_steps=agent_data['max_steps'],
             allow_mcp_servers=agent_data['allow_mcp_servers'],
-            mcp_servers=agent_data['mcp_servers']
+            mcp_servers=agent_data['mcp_servers'],
+            skill=agent_data['skill']  # Required field
         )
 
         model_data = processed_data['model']
@@ -183,6 +202,7 @@ class AppConfig:
 
         lsp_data = processed_data['lsp'] if 'lsp' in processed_data else {}
         app_config = processed_data['app']
+        print(f"LSP workspace: {app_config['working_dir']}")
         lsp = LSPConfig(
             enabled=lsp_data['enabled'],
             workspace=app_config['working_dir'],
@@ -192,6 +212,7 @@ class AppConfig:
             languages=lsp_data['languages']
         )
 
+        print(f"Agent working on : {app_config['working_dir']}")
         # Create AppConfig instance
         config = cls(
             debug=app_config['debug'],

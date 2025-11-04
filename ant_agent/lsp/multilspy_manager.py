@@ -19,9 +19,8 @@ from multilspy.multilspy_exceptions import MultilspyException
 
 from ant_agent.tools.base import AntTool, AntToolResult
 from ant_agent.tools.multilspy_lsp_tools import (
-    MultilspyHoverTool, MultilspyDocumentSymbolTool, MultilspyDefinitionTool,
-    MultilspyReferencesTool, MultilspyCompletionTool, set_tool_context,
-    global_multilspy_tool_manager
+    MultilspyDefinitionTool, MultilspyReferencesTool, MultilspyDeclarationTool,
+    set_tool_context, global_multilspy_tool_manager
 )
 from ant_agent.utils.config import LSPConfig
 
@@ -175,7 +174,25 @@ class MultilspyLSPManager:
                 self.logger.error(f"停止 {language} LSP 服务器失败: {e}")
         
         self.servers.clear()
-    
+
+    def stop_all_servers(self) -> None:
+        """停止所有 LSP 服务器"""
+        for language, server in list(self.servers.items()):
+            try:
+                if hasattr(server, 'stop'):
+                    if asyncio.iscoroutinefunction(server.stop):
+                        # 异步停止
+                        asyncio.create_task(server.stop())
+                    else:
+                        # 同步停止
+                        server.stop()
+                self.logger.info(f"🛑 {language} LSP 服务器已停止")
+            except Exception as e:
+                self.logger.error(f"停止 {language} LSP 服务器失败: {e}")
+
+        self.servers.clear()
+        self.language_to_server.clear()
+
     def get_available_tools(self) -> List[AntTool]:
         """获取所有可用的 LSP 工具"""
         # 使用全局 multilspy 工具管理器
@@ -191,10 +208,26 @@ class MultilspyLSPManager:
 
 # 全局管理器实例
 _lsp_manager: Optional[MultilspyLSPManager] = None
+_current_workspace: Optional[str] = None
 
 def get_lsp_manager(config: LSPConfig) -> MultilspyLSPManager:
     """获取全局 LSP 管理器实例"""
-    global _lsp_manager
-    if _lsp_manager is None:
+    global _lsp_manager, _current_workspace
+
+    # 检查工作空间是否发生变化
+    current_workspace = str(Path(config.workspace).absolute())
+
+    if _lsp_manager is None or _current_workspace != current_workspace:
+        # 如果工作空间变化，创建新的管理器实例
+        if _lsp_manager is not None:
+            # 清理旧的管理器
+            try:
+                _lsp_manager.stop_all_servers()
+            except Exception as e:
+                logging.getLogger("multilspy_lsp_manager").warning(f"停止旧服务器失败: {e}")
+
         _lsp_manager = MultilspyLSPManager(config)
+        _current_workspace = current_workspace
+        logging.getLogger("multilspy_lsp_manager").info(f"创建新的 LSP 管理器，工作空间: {current_workspace}")
+
     return _lsp_manager

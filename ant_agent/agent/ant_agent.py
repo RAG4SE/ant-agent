@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 from ant_agent.agent.base_agent import BaseAgent
-from ant_agent.prompt.agent_prompt import AGENT_SYSTEM_PROMPT
+from ant_agent.prompt.agent_prompt import get_agent_system_prompt
 from ant_agent.tools.bash_tool import BashTool
 from ant_agent.tools.edit_tool import EditTool, CreateFileTool
 from ant_agent.tools.thinking_tool import SequentialThinkingTool
@@ -53,19 +53,19 @@ class AntAgent(BaseAgent):
         super().__init__(app_config, trajectory_recorder, **kwargs)
 
     def _get_system_prompt(self) -> str:
-        """Get the system prompt for Ant Agent."""
-        return AGENT_SYSTEM_PROMPT
+        """Get the system prompt for Ant Agent based on configured skill."""
+        return get_agent_system_prompt(self.app_config.agent.skill)
 
     def _initialize_tools(self) -> List[AntTool]:
         """Initialize the tools for Ant Agent including Multilspy LSP tools."""
-        
+
         base_tools = [
-            BashTool(),
+            BashTool(working_dir=self.app_config.working_dir),
             EditTool(),
             CreateFileTool(),
             SequentialThinkingTool(),
             TaskDoneTool(),
-            PositionFinderTool(),
+            PositionFinderTool(working_dir=self.app_config.working_dir),
         ]
         
         # 如果有 LSP 管理器，添加 Multilspy LSP 工具

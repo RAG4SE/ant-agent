@@ -17,6 +17,7 @@ agent:
   max_steps: 200
   allow_mcp_servers: []
   mcp_servers: {}
+  skill: "SOURCE_CODE_ANALYSIS_WITH_LSP"  # The name is the same as the skill candidate from skills/
 
 # Model configuration
 model:

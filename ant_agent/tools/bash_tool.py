@@ -18,7 +18,6 @@ from pydantic import BaseModel
 class BashInput(BaseModel):
     """Input schema for bash tool."""
     command: str
-    working_dir: Optional[str] = None
 
 
 class BashTool(AntTool):
@@ -27,17 +26,30 @@ class BashTool(AntTool):
     name: str = "bash"
     description: str = "Execute bash commands in the terminal"
     args_schema: Type[BaseModel] = BashInput
+    working_dir: str
 
-    def _run(self, command: str, working_dir: Optional[str] = None) -> AntToolResult:
+    def __init__(self, working_dir: str, **kwargs):
+        """Initialize BashTool with working directory.
+
+        Args:
+            working_dir: Working directory for command execution.
+            **kwargs: Additional keyword arguments for parent class.
+        """
+        # Set working_dir before calling super().__init__ to pass Pydantic validation
+        kwargs['working_dir'] = working_dir
+        super().__init__(**kwargs)
+
+    def _run(self, command: str) -> AntToolResult:
         """Execute bash command synchronously."""
+        # Check if working directory exists
+        if not os.path.exists(self.working_dir):
+            raise FileNotFoundError(f"Working directory does not exist: {self.working_dir}")
+
+        original_cwd = None
         try:
-            # Use current directory if working_dir is invalid or not provided
-            if working_dir and os.path.exists(working_dir):
-                original_cwd = os.getcwd()
-                os.chdir(working_dir)
-            else:
-                # Use current working directory
-                original_cwd = None
+            # Change to working directory
+            original_cwd = os.getcwd()
+            os.chdir(self.working_dir)
 
             # Execute command
             result = subprocess.run(
@@ -58,7 +70,7 @@ class BashTool(AntTool):
                 metadata={
                     "return_code": result.returncode,
                     "command": command,
-                    "working_dir": working_dir or os.getcwd()
+                    "working_dir": self.working_dir
                 }
             )
 
@@ -77,14 +89,17 @@ class BashTool(AntTool):
             if original_cwd:
                 os.chdir(original_cwd)
 
-    async def _arun(self, command: str, working_dir: Optional[str] = None) -> AntToolResult:
+    async def _arun(self, command: str) -> AntToolResult:
         """Execute bash command asynchronously."""
+        # Check if working directory exists
+        if not os.path.exists(self.working_dir):
+            raise FileNotFoundError(f"Working directory does not exist: {self.working_dir}")
+
+        original_cwd = None
         try:
-            # Change to working directory if specified
-            original_cwd = None
-            if working_dir:
-                original_cwd = os.getcwd()
-                os.chdir(working_dir)
+            # Change to working directory
+            original_cwd = os.getcwd()
+            os.chdir(self.working_dir)
 
             # Execute command asynchronously
             process = await asyncio.create_subprocess_shell(
@@ -116,7 +131,7 @@ class BashTool(AntTool):
                 metadata={
                     "return_code": process.returncode,
                     "command": command,
-                    "working_dir": working_dir or os.getcwd()
+                    "working_dir": self.working_dir
                 }
             )
 

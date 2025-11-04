@@ -15,12 +15,11 @@ from pydantic import BaseModel, Field
 
 
 class PositionFinderInput(BaseModel):
-    """Input schema for position finder tool."""
+    """Simplified input schema for position finder tool."""
     file_path: str = Field(description="Path to the source file")
-    target: str = Field(description="Function name, variable name, class name, or other identifier to find")
-    search_mode: str = Field(default="exact", description="Search mode: 'exact', 'fuzzy', 'definition', 'reference'")
-    context_line: Optional[int] = Field(default=None, description="Optional line number hint (1-indexed)")
-    target_type: str = Field(default="any", description="Type of target: 'function', 'class', 'variable', 'import', 'any'")
+    line_number: int = Field(description="0-based line number where to search")
+    line_content: str = Field(description="The content of the line to search in")
+    target: str = Field(description="The target string to find in the line")
 
 
 class PositionFinderResult(BaseModel):
@@ -53,98 +52,120 @@ class PositionFinderTool(AntTool):
     """
 
     name: str = "position_finder"
-    description: str = """Find accurate positions of functions, classes, and variables for LSP tools.
+    description: str = """Find the exact position of a target string in a specific line of code for LSP tools.
 
-    This tool intelligently locates code elements and provides LSP-ready coordinates.
-    Use it BEFORE calling multilspy_python_definition to ensure accurate positioning.
+    This simplified tool takes a specific line of code and finds the position of a target string within it.
+    Use it BEFORE calling multilspy_python_definition to get precise coordinates.
 
     Key features:
-    - Smart search with multiple modes (exact, fuzzy, definition, reference)
-    - Confidence scoring to indicate result reliability
+    - Simple and precise: specify exact line and target
     - LSP-compatible coordinate format (0-indexed line and character)
-    - Fallback suggestions when positioning fails
+    - Working directory support for relative path resolution
+    - High confidence exact matching
 
     Best practices:
-    1. Use this tool first to find accurate positions
-    2. Check the confidence score - >0.8 is reliable for LSP
-    3. If confidence is low or fails, switch to bash+grep approach
-    4. Always validate results before proceeding with LSP operations"""
+    1. Use this tool when you know the exact line containing the target
+    2. Provide the full line content for accurate matching
+    3. Use 0-based line numbers as per LSP specification
+    4. The tool returns the first occurrence of the target in the line"""
 
     args_schema: Type[BaseModel] = PositionFinderInput
+    working_dir: str
 
-    def _run(self, file_path: str, target: str, search_mode: str = "exact",
-             context_line: Optional[int] = None, target_type: str = "any") -> AntToolResult:
-        """Find the position of a target in source code."""
+    def __init__(self, working_dir: str, **kwargs):
+        """Initialize PositionFinderTool with working directory.
+
+        Args:
+            working_dir: Working directory for resolving relative paths.
+            **kwargs: Additional keyword arguments for parent class.
+        """
+        # Set working_dir before calling super().__init__ to pass Pydantic validation
+        kwargs['working_dir'] = working_dir
+        super().__init__(**kwargs)
+        self.working_dir = working_dir
+
+    def _get_absolute_path(self, file_path: str) -> str:
+        """Get absolute path for file, resolving relative paths against working directory."""
+        path = Path(file_path)
+        if path.is_absolute():
+            return str(path)
+        else:
+            return str(Path(self.working_dir) / path)
+
+    def _run(self, file_path: str, line_number: int, line_content: str, target: str) -> AntToolResult:
+        """Find the position of a target in the specified line of code.
+
+        Args:
+            file_path: Path to the source file
+            line_number: 0-based line number where to search
+            line_content: The content of the line to search in
+            target: The target string to find in the line
+
+        Returns:
+            LSP-compatible coordinates with the target position
+        """
         try:
-            path = Path(file_path)
+            # Resolve file path against working directory
+            absolute_path = self._get_absolute_path(file_path)
+            path = Path(absolute_path)
+
+            # 验证文件存在（可选，因为我们要找的是指定行的内容）
             if not path.exists():
                 return AntToolResult(
                     success=False,
-                    error=f"File not found: {file_path}",
-                    metadata={"suggestion": "Check if the file path is correct or use bash to explore the directory"}
+                    error=f"File not found: {file_path} (resolved to: {absolute_path})",
+                    metadata={"suggestion": "Check if the file path is correct"}
                 )
 
             if not path.is_file():
                 return AntToolResult(
                     success=False,
-                    error=f"Path is not a file: {file_path}",
+                    error=f"Path is not a file: {file_path} (resolved to: {absolute_path})",
                     metadata={"suggestion": "Use bash to explore directories"}
                 )
 
-            # Read file content
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except Exception as e:
+            # 在指定的行内容中查找目标
+            char_idx = line_content.find(target)
+
+            if char_idx == -1:
                 return AntToolResult(
                     success=False,
-                    error=f"Error reading file: {str(e)}",
-                    metadata={"suggestion": "Try using bash to read the file instead"}
+                    error=f"Target '{target}' not found in line {line_number}: {line_content}",
+                    metadata={"suggestion": "Check if the target string is correct or try a different line"}
                 )
 
-            # Find positions based on search mode
-            positions = self._find_positions(content, target, search_mode, target_type, context_line)
-
-            if not positions:
-                return AntToolResult(
-                    success=False,
-                    error=f"Target '{target}' not found in {file_path}",
-                    metadata={
-                        "suggestions": [
-                            f"Try search_mode='fuzzy' for approximate matching",
-                            f"Use bash to search: grep -n '{target}' {file_path}",
-                            f"Check if the target name is spelled correctly",
-                            f"Try target_type='reference' if looking for usage rather than definition"
-                        ]
-                    }
-                )
-
-            # Calculate confidence and find best match
-            best_match, confidence = self._calculate_best_match(positions, context_line, target, content)
-
-            # Convert to LSP coordinates (0-indexed)
-            lsp_coordinates = None
-            if best_match:
-                lsp_coordinates = {
-                    "file_path": str(path),
-                    "line": best_match["line_0_indexed"],
-                    "character": best_match["character_0_indexed"]
-                }
+            # 返回LSP兼容的坐标
+            lsp_coordinates = {
+                "file_path": absolute_path,
+                "line": line_number,  # 0-based
+                "character": char_idx  # 0-based
+            }
 
             result_data = PositionFinderResult(
                 success=True,
-                positions=positions,
-                best_match=best_match,
-                confidence=confidence,
+                positions=[{
+                    "line_0_indexed": line_number,
+                    "line_1_indexed": line_number + 1,
+                    "character_0_indexed": char_idx,
+                    "line_content": line_content.strip(),
+                    "match_type": "exact",
+                    "context": line_content.strip()
+                }],
+                best_match={
+                    "line_0_indexed": line_number,
+                    "line_1_indexed": line_number + 1,
+                    "character_0_indexed": char_idx,
+                    "line_content": line_content.strip(),
+                    "match_type": "exact",
+                    "context": line_content.strip()
+                },
+                confidence=1.0,  # 精确匹配，置信度为1.0
                 lsp_coordinates=lsp_coordinates,
-                alternative_suggestions=self._generate_suggestions(positions, confidence)
+                alternative_suggestions=[]
             )
 
-            output = f"Found {len(positions)} position(s) for '{target}'"
-            if best_match:
-                output += f"\nBest match: Line {best_match['line_1_indexed']}, Character {best_match['character_0_indexed']} (confidence: {confidence:.2f})"
-            if lsp_coordinates:
-                output += f"\nLSP coordinates: {lsp_coordinates}"
+            output = f"Found '{target}' at line {line_number} (0-based): {line_content}, character {char_idx} (0-based)"
+            output += f"\nLSP coordinates: {lsp_coordinates}"
 
             return AntToolResult(
                 success=True,
@@ -156,7 +177,7 @@ class PositionFinderTool(AntTool):
             return AntToolResult(
                 success=False,
                 error=f"Position finder error: {str(e)}",
-                metadata={"suggestion": "Try using bash tools as fallback"}
+                metadata={"suggestion": "Check input parameters"}
             )
 
     def _find_positions(self, content: str, target: str, search_mode: str, target_type: str, context_line: Optional[int]) -> List[Dict[str, Any]]:

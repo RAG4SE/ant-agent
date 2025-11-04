@@ -1,0 +1,16 @@
+{
+  "name": "solidity-interface-demo",
+  "version": "1.0.0",
+  "description": "Demo project for Solidity interface-based cross-contract calls",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^3.0.0",
+    "hardhat": "^2.17.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
