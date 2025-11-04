@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -20,6 +21,10 @@ except ImportError:
         yaml = YAML()
     except ImportError:
         raise ImportError("Please install pyyaml: pip install pyyaml")
+
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class LLMProvider(Enum):
@@ -202,7 +207,7 @@ class AppConfig:
 
         lsp_data = processed_data['lsp'] if 'lsp' in processed_data else {}
         app_config = processed_data['app']
-        print(f"LSP workspace: {app_config['working_dir']}")
+        logger.info(f"LSP workspace: {app_config['working_dir']}")
         lsp = LSPConfig(
             enabled=lsp_data['enabled'],
             workspace=app_config['working_dir'],
@@ -212,7 +217,7 @@ class AppConfig:
             languages=lsp_data['languages']
         )
 
-        print(f"Agent working on : {app_config['working_dir']}")
+        logger.info(f"Agent working on : {app_config['working_dir']}")
         # Create AppConfig instance
         config = cls(
             debug=app_config['debug'],
