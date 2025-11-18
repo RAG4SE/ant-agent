@@ -9,7 +9,7 @@ import logging
 from typing import List, Optional, Dict, Any
 
 from ant_agent.agent.base_agent import BaseAgent
-from ant_agent.prompt.agent_prompt import get_agent_system_prompt
+from ant_agent.prompt.agent_prompt import get_agent_skill
 from ant_agent.tools.bash_tool import BashTool
 from ant_agent.tools.edit_tool import EditTool, CreateFileTool
 from ant_agent.tools.thinking_tool import SequentialThinkingTool
@@ -27,7 +27,6 @@ class AntAgent(BaseAgent):
     def __init__(
         self,
         app_config: AppConfig,
-        trajectory_recorder: Optional[TrajectoryRecorder] = None,
         **kwargs,
     ):
         """Initialize Ant Agent with Multilspy LSP support.
@@ -46,33 +45,26 @@ class AntAgent(BaseAgent):
         else:
             self.lsp_manager = None
 
-        # Create trajectory recorder if not provided and trajectory is enabled
-        if trajectory_recorder is None and app_config.trajectory.enabled:
-            trajectory_recorder = TrajectoryRecorder(app_config.trajectory)
-
-        super().__init__(app_config, trajectory_recorder, **kwargs)
+        super().__init__(app_config, **kwargs)
 
     def _get_system_prompt(self) -> str:
         """Get the system prompt for Ant Agent based on configured skill."""
-        return get_agent_system_prompt(self.app_config.agent.skill)
+        return get_agent_skill(self.app_config.agent.skill)
 
     def _initialize_tools(self) -> List[AntTool]:
         """Initialize the tools for Ant Agent including Multilspy LSP tools."""
 
-        base_tools = [
-            BashTool(working_dir=self.app_config.working_dir),
-            EditTool(),
-            CreateFileTool(),
-            SequentialThinkingTool(),
-            TaskDoneTool(),
-            PositionFinderTool(working_dir=self.app_config.working_dir),
-        ]
-        
-        # 如果有 LSP 管理器，添加 Multilspy LSP 工具
+        # Get base tools from parent class (includes StepCompleteTool and PlanCompleteTool)
+        base_tools = super()._initialize_tools()
+
+        # Add PositionFinderTool (specific to AntAgent)
+        base_tools.append(PositionFinderTool(working_dir=self.app_config.working_dir))
+
+        # Add LSP tools if available
         if self.lsp_manager:
             lsp_tools = self.lsp_manager.get_available_tools()
             base_tools.extend(lsp_tools)
-        
+
         return base_tools
 
     def get_lsp_info(self) -> Optional[List[Dict[str, Any]]]:
@@ -88,14 +80,6 @@ class AntAgent(BaseAgent):
                 })
             return servers_info
         return None
-
-    def get_thinking_summary(self) -> str:
-        """Get a summary of the thinking process."""
-        return self.thinking_tool.get_thinking_summary()
-
-    def clear_thinking(self) -> None:
-        """Clear the thinking process."""
-        self.thinking_tool.clear_thoughts()
 
     @property
     def thinking_tool(self) -> SequentialThinkingTool:

@@ -41,6 +41,7 @@ class LLMProvider(Enum):
     DASHSCOPE = "dashscope"
     LINGXI = "lingxi"
     KIMI = "kimi"
+    SILICONFLOW = "siliconflow"
 
 
 @dataclass
@@ -59,7 +60,11 @@ class ModelConfig:
     supports_tool_calling: bool
     candidate_count: Optional[int]
     stop_sequences: Optional[List[str]]
-    
+    # Context window configuration for token management
+    context_window_size: int
+    token_threshold_ratio: float
+    enable_token_management: bool
+
     def get_max_tokens_param(self) -> int:
         """Get the maximum tokens parameter value."""
         if self.max_completion_tokens is not None:
@@ -68,7 +73,7 @@ class ModelConfig:
             return self.max_tokens
         else:
             return 4096  # Default value
-    
+
     def should_use_max_completion_tokens(self) -> bool:
         """Determine whether to use the max_completion_tokens parameter."""
         return (
@@ -165,15 +170,15 @@ class AppConfig:
 
         # Create configurations from the loaded data
         agent_data = processed_data['agent']
+        model_data = processed_data['model']
         agent = AgentConfig(
-            model=agent_data['model'],
+            model=model_data['model'],
             max_steps=agent_data['max_steps'],
             allow_mcp_servers=agent_data['allow_mcp_servers'],
             mcp_servers=agent_data['mcp_servers'],
             skill=agent_data['skill']  # Required field
         )
 
-        model_data = processed_data['model']
         provider_str = model_data['model_provider']
         provider = LLMProvider(provider_str.lower()) if isinstance(provider_str, str) else provider_str
 
@@ -189,7 +194,10 @@ class AppConfig:
             max_completion_tokens=model_data['max_completion_tokens'],
             supports_tool_calling=model_data['supports_tool_calling'],
             candidate_count=model_data['candidate_count'],
-            stop_sequences=model_data['stop_sequences']
+            stop_sequences=model_data['stop_sequences'],
+            context_window_size=model_data['context_window_size'],
+            token_threshold_ratio=model_data['token_threshold_ratio'],
+            enable_token_management=model_data['enable_token_management']
         )
 
         trajectory_data = processed_data['trajectory']

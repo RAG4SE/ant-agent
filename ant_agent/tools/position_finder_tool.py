@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 class PositionFinderInput(BaseModel):
     """Enhanced input schema for position finder tool with validation capabilities."""
     file_path: str = Field(description="Path to the source file")
-    file_content: str = Field(description="Complete content of the source file")
     line_number: int = Field(description="0-based line number suggested by LLM")
     line_content: str = Field(description="The content of the line to search in (as suggested by LLM)")
     target: str = Field(description="The target string to find in the line")
@@ -32,7 +31,6 @@ class PositionFinderResult(BaseModel):
     success: bool
     positions: List[Dict[str, Any]] = Field(default_factory=list)
     best_match: Optional[Dict[str, Any]] = None
-    confidence: float = 0.0
     alternative_suggestions: List[str] = Field(default_factory=list)
     error_message: Optional[str] = None
     lsp_coordinates: Optional[Dict[str, Any]] = None  # LSP-ready coordinates
@@ -45,45 +43,17 @@ class PositionFinderTool(AntTool):
     in source code, providing precise coordinates for LSP tools like multilspy_python_definition.
 
     When to use:
-    - Before calling multilspy_python_definition to get accurate coordinates
+    - Before calling multilspy_*_definition (* represents any supported programming language) to get accurate coordinates
     - When you need to find the exact position of a function/class/variable
     - When multilspy tools are failing due to incorrect position data
     - To validate that a target exists before attempting LSP operations
 
     After using this tool:
-    - If success and confidence > 0.8, use the lsp_coordinates with multilspy tools
-    - If success but confidence < 0.8, consider using bash+grep as fallback
     - If failed, use bash tools to explore the file structure instead
     """
 
     name: str = "position_finder"
-    description: str = """Intelligent position finder with LLM suggestion validation for LSP tools.
-
-    This enhanced tool validates LLM-suggested positions and finds accurate coordinates for LSP tools.
-    It performs intelligent validation and progressive search when the suggested position is incorrect.
-
-    Key features:
-    - Validates LLM-suggested 0-based line numbers against actual file content
-    - Progressive search: ±3 lines → ±5 lines if initial validation fails
-    - Returns accurate 0-based coordinates for LSP tools
-    - Provides detailed error information for fallback strategies
-
-    Validation process:
-    1. Verifies the suggested line content matches the actual file
-    2. Checks if target exists at the suggested position
-    3. If not found, searches ±3 lines around the suggestion
-    4. If still not found, expands to ±5 lines
-    5. Returns precise coordinates or detailed error for bash fallback
-
-    When to use:
-    - When LLM provides a suggested line number and content
-    - Before calling multilspy tools to validate coordinates
-    - When you need intelligent position validation with fallback options
-
-    On validation failure:
-    - Returns detailed error with search range information
-    - Agent should use bash+grep for manual code exploration
-    - Provides alternative search strategies"""
+    description: str = """Intelligent position finder with LLM suggestion validation for LSP tools. position_finder can find the 0-based line number and the 0-based column number of the target, which is ready for being sent to LSP server. Use this tool when you want to use the multilspy-related tools but do not know the exact position, or when the LLM tells so."""
 
     args_schema: Type[BaseModel] = PositionFinderInput
     working_dir: str
@@ -108,12 +78,11 @@ class PositionFinderTool(AntTool):
         else:
             return str(Path(self.working_dir) / path)
 
-    def _run(self, file_path: str, file_content: str, line_number: int, line_content: str, target: str) -> AntToolResult:
+    def _run(self, file_path: str, line_number: int, line_content: str, target: str) -> AntToolResult:
         """Intelligent position finder with LLM suggestion validation and progressive search.
 
         Args:
             file_path: Path to the source file
-            file_content: Complete content of the source file
             line_number: 0-based line number suggested by LLM
             line_content: The content of the line to search in (as suggested by LLM)
             target: The target string to find in the line
@@ -128,6 +97,37 @@ class PositionFinderTool(AntTool):
             # Resolve file path against working directory
             absolute_path = self._get_absolute_path(file_path)
             logger.debug(f"Resolved absolute path: {absolute_path}")
+
+            # Read file content from file_path
+            try:
+                with open(absolute_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                logger.debug(f"Successfully read file content from {absolute_path}")
+            except FileNotFoundError:
+                logger.error(f"File not found: {absolute_path}")
+                return AntToolResult(
+                    success=False,
+                    error=f"File not found: {file_path}",
+                    metadata={
+                        "status": "error",
+                        "suggested_action": "check_file_path",
+                        "file_path": file_path,
+                        "absolute_path": absolute_path
+                    }
+                )
+            except IOError as e:
+                logger.error(f"Error reading file {absolute_path}: {str(e)}")
+                return AntToolResult(
+                    success=False,
+                    error=f"Error reading file {file_path}: {str(e)}",
+                    metadata={
+                        "status": "error",
+                        "suggested_action": "check_file_permissions",
+                        "file_path": file_path,
+                        "absolute_path": absolute_path,
+                        "exception": str(e)
+                    }
+                )
 
             # Parse file content into lines
             lines = file_content.split('\n')
@@ -172,7 +172,7 @@ class PositionFinderTool(AntTool):
                 if char_idx != -1:
                     return self._create_success_result(
                         absolute_path, line_number, char_idx, actual_line, target,
-                        "exact_match", 1.0, "LLM suggestion validated"
+                        "exact_match", "LLM suggestion validated"
                     )
 
             # Step 2: Progressive search if initial validation fails
@@ -183,7 +183,7 @@ class PositionFinderTool(AntTool):
                 char_idx = actual_line.find(target)
                 return self._create_success_result(
                     absolute_path, line_number, char_idx, actual_line, target,
-                    "content_mismatch", 0.9, "target_found_in_actual_line"
+                    "content_mismatch", "target_found_in_actual_line"
                 )
 
             # Step 3: Search ±3 lines around the suggestion
@@ -206,6 +206,7 @@ class PositionFinderTool(AntTool):
             return AntToolResult(
                 success=False,
                 error=f"Target '{target}' not found within ±5 lines of suggested position (line {line_number}).",
+                output=f"Target '{target}' not found within ±5 lines of suggested position (line {line_number}).",
                 metadata={
                     "status": "error",
                     "suggested_action": "use_bash_search",
@@ -219,6 +220,7 @@ class PositionFinderTool(AntTool):
         except Exception as e:
             logger.error(f"Position finder validation error: {str(e)}", exc_info=True)
             return AntToolResult(
+                output=f"Position finder validation error: {str(e)}",
                 success=False,
                 error=f"Position finder validation error: {str(e)}",
                 metadata={
@@ -252,18 +254,18 @@ class PositionFinderTool(AntTool):
                 logger.debug(f"Line {i} content: '{line_content}'")
                 return self._create_success_result(
                     file_path, i, char_idx, line_content, target,
-                    f"range_search_±{range_size}", 0.8, f"found_in_±{range_size}_lines"
+                    f"range_search_±{range_size}", f"found_in_±{range_size}_lines"
                 )
 
         logger.debug(f"Target not found in ±{range_size} lines search")
         return None
 
     def _create_success_result(self, file_path: str, line_number: int, char_idx: int,
-                             line_content: str, target: str, match_type: str, confidence: float,
+                             line_content: str, target: str, match_type: str, 
                              validation_method: str) -> AntToolResult:
         """Create a success result with proper formatting."""
         logger.info(f"Creating success result for target '{target}' at line {line_number}, char {char_idx}")
-        logger.debug(f"Match type: {match_type}, Confidence: {confidence}, Validation: {validation_method}")
+        logger.debug(f"Match type: {match_type}, Validation: {validation_method}")
 
         lsp_coordinates = {
             "file_path": file_path,
@@ -291,16 +293,14 @@ class PositionFinderTool(AntTool):
                 "context": line_content.strip(),
                 "validation_method": validation_method
             },
-            confidence=confidence,
             lsp_coordinates=lsp_coordinates,
             alternative_suggestions=[]
         )
 
         output = f"Found '{target}' at line {line_number} (0-based): {line_content}, character {char_idx} (0-based)"
         output += f"\nLSP coordinates: {lsp_coordinates}"
-        output += f"\nValidation: {validation_method} (confidence: {confidence})"
+        output += f"\nValidation: {validation_method}"
 
-        logger.info(f"✓ Success result created with confidence {confidence}")
 
         return AntToolResult(
             success=True,
@@ -308,10 +308,18 @@ class PositionFinderTool(AntTool):
             metadata=result_data.dict()
         )
 
-    def _find_positions(self, content: str, target: str, search_mode: str, target_type: str, context_line: Optional[int]) -> List[Dict[str, Any]]:
-        """Find all positions of the target in content."""
+    def _find_positions(self, file_path: str, target: str, search_mode: str, target_type: str, context_line: Optional[int]) -> List[Dict[str, Any]]:
+        """Find all positions of the target in file content."""
         positions = []
-        lines = content.split('\n')
+
+        # Read file content from file_path
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            lines = content.split('\n')
+        except IOError as e:
+            logger.error(f"Error reading file {file_path} for position search: {str(e)}")
+            return positions
 
         # Try different search strategies based on mode and target type
         if search_mode == "exact":
@@ -495,64 +503,3 @@ class PositionFinderTool(AntTool):
             pos["context_distance"] = distance
 
         return sorted(positions, key=lambda x: x["context_distance"])
-
-    def _calculate_best_match(self, positions: List[Dict[str, Any]], context_line: Optional[int], target: str, content: str) -> tuple:
-        """Calculate the best match and confidence score."""
-        if not positions:
-            return None, 0.0
-
-        # Score each position
-        for pos in positions:
-            score = 0.0
-
-            # Base score for being a valid match
-            score += 0.5
-
-            # Bonus for definition types
-            if "definition" in pos.get("match_type", ""):
-                score += 0.3
-
-            # Bonus for exact matches
-            if pos.get("match_type") == "exact":
-                score += 0.2
-
-            # Context proximity bonus
-            if context_line:
-                distance = abs(pos["line_1_indexed"] - context_line)
-                if distance <= 3:
-                    score += 0.2 * (1 - distance / 10)
-
-            # Content analysis bonus
-            line_content = pos.get("line_content", "")
-            if "def " in line_content and "(" in line_content:
-                score += 0.1
-            if line_content.strip().startswith(("def ", "class ")):
-                score += 0.1
-
-            pos["score"] = min(score, 1.0)  # Cap at 1.0
-
-        # Find best match
-        best_match = max(positions, key=lambda x: x.get("score", 0.0))
-        confidence = best_match.get("score", 0.0)
-
-        return best_match, confidence
-
-    def _generate_suggestions(self, positions: List[Dict[str, Any]], confidence: float) -> List[str]:
-        """Generate alternative suggestions based on results."""
-        suggestions = []
-
-        if confidence < 0.6:
-            suggestions.append("Low confidence - consider using bash+grep for manual verification")
-
-        if len(positions) > 1:
-            suggestions.append(f"Multiple matches found ({len(positions)}) - verify the correct one")
-
-        if confidence > 0.8:
-            suggestions.append("High confidence match - safe to use with LSP tools")
-
-        suggestions.extend([
-            "Use the lsp_coordinates with multilspy_python_definition for precise definition lookup",
-            "If LSP tools fail, fall back to bash tools for file exploration"
-        ])
-
-        return suggestions

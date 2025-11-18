@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Sequence
 
-from langchain_core.language_models import BaseLanguageModel
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -25,9 +25,9 @@ class LLMClient:
         """Initialize LLM client with model configuration."""
         self.model_config = model_config
         self.provider = model_config.model_provider
-        self._client = self._create_client()
+        self._client: BaseChatModel = self._create_client()
 
-    def _create_client(self) -> BaseLanguageModel:
+    def _create_client(self) -> BaseChatModel:
         """Create LangChain client based on provider."""
         common_params = {
             "model": self.model_config.model,
@@ -85,6 +85,11 @@ class LLMClient:
                 common_params["base_url"] = "https://api.moonshot.cn/v1"
                 return ChatOpenAI(**common_params)
 
+            case LLMProvider.SILICONFLOW:
+                # Siliconflow uses OpenAI-compatible API
+                common_params["base_url"] = "https://api.siliconflow.cn/v1"
+                return ChatOpenAI(**common_params)
+
             case _:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
@@ -100,6 +105,7 @@ class LLMClient:
             LLMProvider.LINGXI: "LINGXI_API_KEY",
             LLMProvider.KIMI: "KIMI_API_KEY",
             LLMProvider.OPENROUTER: "OPENROUTER_API_KEY",
+            LLMProvider.SILICONFLOW: "SILICONFLOW_API_KEY"
         }
         return os.getenv(env_keys.get(self.provider, ""))
 
@@ -132,7 +138,7 @@ class LLMClient:
             return self._client.invoke(messages, **kwargs)
 
     @property
-    def client(self) -> BaseLanguageModel:
+    def client(self) -> BaseChatModel:
         """Get the underlying LangChain client."""
         return self._client
 

@@ -43,7 +43,7 @@ def load_skill_from_file(skill_name: str, skills_dir: str = None) -> Optional[st
 
     return None
 
-def get_agent_system_prompt(skill_name: str) -> str:
+def get_agent_skill(skill_name: str) -> str:
     """
     Get the appropriate system prompt based on the selected skill.
 

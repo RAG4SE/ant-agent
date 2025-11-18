@@ -1,11 +1,6 @@
 # Copyright (c) Haoyang Ma
 # SPDX-License-Identifier: MIT
 
-"""
-MCP LSP 工具适配器
-将 MCP LSP 工具转换为 AntAgent 工具
-"""
-
 import logging
 from typing import Dict, List, Any, Optional
 from ant_agent.tools.base import AntTool

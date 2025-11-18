@@ -144,3 +144,12 @@ class BashTool(AntTool):
             # Restore original working directory
             if original_cwd:
                 os.chdir(original_cwd)
+
+class TempDirBash(BashTool):
+    name: str = "temp_dir_bash"
+    description: str = "Execute bash commands in the terminal to handle a temporary directory, where copied versions of source files—each prefixed with their 0-based line numbers—will be stored."
+    
+
+class SourceDirBash(BashTool):
+    name: str = "source_dir_bash"
+    description: str = "Execute bash commands in the terminal to handle the source code directory"

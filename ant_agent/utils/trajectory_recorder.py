@@ -99,13 +99,6 @@ class TrajectoryRecorder:
 
         self.trajectory_data["tool_calls"].append(tool_data)
 
-    def add_system_info(self, info: Dict[str, Any]) -> None:
-        """Add system information to the trajectory."""
-        if not self.enabled or not self.config.include_system_info:
-            return
-
-        self.trajectory_data["system_info"].update(info)
-
     def add_system_prompt(self, system_prompt: str) -> None:
         """Add the system prompt to the trajectory."""
         if not self.enabled or not self.config.include_system_info:

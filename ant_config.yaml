@@ -13,17 +13,15 @@ app:
 
 # Agent configuration
 agent:
-  model: "deepseek-chat"
   max_steps: 200
   allow_mcp_servers: []
   mcp_servers: {}
-  skill: "SOURCE_CODE_ANALYSIS_WITH_LSP"  # The name is the same as the skill candidate from skills/
+  skill: "BUG_DETECTION_WITH_LSP"  # The name is the same as the skill candidate from skills/
 
 # Model configuration
 model:
-  model: "deepseek-chat"
-  model_provider: "deepseek"
-  api_version: null
+  model: "deepseek-v3.2-exp"
+  model_provider: "dashscope"
   temperature: 0.5
   top_p: 1.0
   top_k: 0
@@ -34,6 +32,10 @@ model:
   supports_tool_calling: true
   candidate_count: null
   stop_sequences: null
+  # Context window configuration for token management
+  context_window_size: 128000  # Maximum context window size in tokens
+  token_threshold_ratio: 0.6   # Threshold ratio (60%) for triggering history archival
+  enable_token_management: true # Enable automatic token management and history archival
 
 # LSP Configuration (new LSPConfig)
 lsp:
@@ -59,7 +61,7 @@ trajectory:
   output_file: "trajectory.json"
   save_on_completion: true
   include_messages: true
-  include_tool_results: true
+  include_tool_results: false
   include_llm_calls: true
-  include_tool_calls: true
+  include_tool_calls: false
   include_system_info: true

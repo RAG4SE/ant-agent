@@ -314,3 +314,5 @@ dist
 .pnp.*
 
 trajectories/
+
+.vscode
